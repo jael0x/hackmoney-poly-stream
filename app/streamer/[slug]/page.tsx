@@ -154,9 +154,6 @@ export default async function StreamerPage({
                 noPrice={Number(market.no_price)}
                 volume={Number(market.volume)}
                 endDate={market.end_date}
-                onBuy={(marketId, position) => {
-                  console.log(`Buy ${position} for market ${marketId}`);
-                }}
               />
             ))}
           </div>
