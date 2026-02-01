@@ -73,6 +73,12 @@ export function Navbar() {
             {user ? (
               <>
                 <Button
+                  className="bg-blue-600 hover:bg-blue-700 text-white"
+                  asChild
+                >
+                  <Link href="/create-market">Create Market</Link>
+                </Button>
+                <Button
                   variant="ghost"
                   className="text-gray-300 hover:text-white hover:bg-gray-800"
                   onClick={handleSignOut}
