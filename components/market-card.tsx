@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { ProbabilityChart } from '@/components/probability-chart';
 import { TrendingUp, Clock } from 'lucide-react';
 import { useState } from 'react';
+import Link from 'next/link';
 
 interface MarketCardProps {
   id: string;
@@ -54,18 +55,19 @@ export function MarketCard({
   };
 
   return (
-    <Card className="border-gray-800 bg-gray-900 hover:border-gray-700 transition-all overflow-hidden">
-      <div className="p-5">
-        <div className="flex items-start justify-between gap-4 mb-4">
-          <div className="flex-1">
-            <h3 className="text-white font-semibold text-base leading-tight mb-2">
-              {question}
-            </h3>
-            {description && (
-              <p className="text-gray-400 text-sm line-clamp-2">{description}</p>
-            )}
+    <Link href={`/market/${id}`}>
+      <Card className="border-gray-800 bg-gray-900 hover:border-gray-700 transition-all overflow-hidden cursor-pointer">
+        <div className="p-5">
+          <div className="flex items-start justify-between gap-4 mb-4">
+            <div className="flex-1">
+              <h3 className="text-white font-semibold text-base leading-tight mb-2">
+                {question}
+              </h3>
+              {description && (
+                <p className="text-gray-400 text-sm line-clamp-2">{description}</p>
+              )}
+            </div>
           </div>
-        </div>
 
         <div className="mb-4">
           <ProbabilityChart currentPrice={yesPrice} />
@@ -117,7 +119,8 @@ export function MarketCard({
             </div>
           )}
         </div>
-      </div>
-    </Card>
+        </div>
+      </Card>
+    </Link>
   );
 }
