@@ -1,3 +1,11 @@
+export type Json =
+  | string
+  | number
+  | boolean
+  | null
+  | { [key: string]: Json | undefined }
+  | Json[];
+
 export type Database = {
   public: {
     Tables: {
@@ -6,20 +14,24 @@ export type Database = {
           id: string;
           username: string | null;
           avatar_url: string | null;
+          balance: number | null;
           created_at: string;
         };
         Insert: {
           id: string;
           username?: string | null;
           avatar_url?: string | null;
+          balance?: number | null;
           created_at?: string;
         };
         Update: {
           id?: string;
           username?: string | null;
           avatar_url?: string | null;
+          balance?: number | null;
           created_at?: string;
         };
+        Relationships: [];
       };
       streamers: {
         Row: {
@@ -58,6 +70,7 @@ export type Database = {
           followers_count?: number;
           created_at?: string;
         };
+        Relationships: [];
       };
       markets: {
         Row: {
@@ -69,7 +82,7 @@ export type Database = {
           no_price: number;
           volume: number;
           end_date: string | null;
-          status: 'active' | 'closed' | 'resolved';
+          status: string;
           created_at: string;
           updated_at: string;
         };
@@ -82,7 +95,7 @@ export type Database = {
           no_price?: number;
           volume?: number;
           end_date?: string | null;
-          status?: 'active' | 'closed' | 'resolved';
+          status?: string;
           created_at?: string;
           updated_at?: string;
         };
@@ -95,11 +108,67 @@ export type Database = {
           no_price?: number;
           volume?: number;
           end_date?: string | null;
-          status?: 'active' | 'closed' | 'resolved';
+          status?: string;
           created_at?: string;
           updated_at?: string;
         };
+        Relationships: [
+          {
+            foreignKeyName: "markets_streamer_id_fkey";
+            columns: ["streamer_id"];
+            isOneToOne: false;
+            referencedRelation: "streamers";
+            referencedColumns: ["id"];
+          }
+        ];
       };
+      transactions: {
+        Row: {
+          id: string;
+          user_id: string;
+          type: string;
+          amount: number;
+          description: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          type: string;
+          amount: number;
+          description?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          type?: string;
+          amount?: number;
+          description?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "transactions_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          }
+        ];
+      };
+    };
+    Views: {
+      [_ in never]: never;
+    };
+    Functions: {
+      [_ in never]: never;
+    };
+    Enums: {
+      [_ in never]: never;
+    };
+    CompositeTypes: {
+      [_ in never]: never;
     };
   };
 };

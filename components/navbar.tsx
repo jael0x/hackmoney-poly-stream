@@ -5,12 +5,12 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
-import { User } from '@supabase/supabase-js';
-import { Gamepad2, Search, TrendingUp } from 'lucide-react';
+import { User as SupabaseUser } from '@supabase/supabase-js';
+import { Gamepad2, Search, TrendingUp, User as UserIcon } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 
 export function Navbar() {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<SupabaseUser | null>(null);
   const pathname = usePathname();
   const router = useRouter();
 
@@ -77,6 +77,16 @@ export function Navbar() {
                   asChild
                 >
                   <Link href="/create-market">Create Market</Link>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-gray-300 hover:text-white hover:bg-gray-800"
+                  asChild
+                >
+                  <Link href="/profile">
+                    <UserIcon className="h-5 w-5" />
+                  </Link>
                 </Button>
                 <Button
                   variant="ghost"
