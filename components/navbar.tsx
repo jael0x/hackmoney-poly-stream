@@ -96,6 +96,12 @@ export function Navbar() {
                   <Link href="/login">Log In</Link>
                 </Button>
                 <Button
+                  className="bg-blue-600 hover:bg-blue-700 text-white"
+                  asChild
+                >
+                  <Link href="/create-market">Create Market</Link>
+                </Button>
+                <Button
                   className="bg-purple-600 hover:bg-purple-700 text-white"
                   asChild
                 >
