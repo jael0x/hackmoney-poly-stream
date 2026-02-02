@@ -1,9 +1,19 @@
-import { createClient } from '@supabase/supabase-js';
+import { createServerClient as createClient } from '@supabase/ssr';
+import { cookies } from 'next/headers';
 import type { Database } from '@/types/database';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-
 export function createServerClient() {
-  return createClient<Database>(supabaseUrl, supabaseAnonKey);
+  const cookieStore = cookies();
+
+  return createClient<Database>(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get(name: string) {
+          return cookieStore.get(name)?.value;
+        },
+      },
+    }
+  );
 }
