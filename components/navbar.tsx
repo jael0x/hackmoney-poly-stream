@@ -81,6 +81,7 @@ export function Navbar() {
                 <Button
                   variant="ghost"
                   className="text-gray-300 hover:text-white hover:bg-gray-800"
+                  onClick={handleSignOut}
                 >
                   Sign Out
                 </Button>
