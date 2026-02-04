@@ -29,20 +29,47 @@ export class AuthService {
   }
 
   /**
+   * Check if there's an existing valid session for the user
+   * @returns True if authenticated and session not expired
+   */
+  hasValidSession(): boolean {
+    return this.isAuthenticated();
+  }
+
+  /**
    * Initialize authentication with Yellow Network
    * @param walletClient - Viem wallet client for signing
    * @param userAddress - User's wallet address
    * @param allowances - Token allowances for the session
+   * @param forceReauth - Force reauthentication even if session exists
    * @returns Promise that resolves when authenticated
    */
   async authenticate(
     walletClient: WalletClient,
     userAddress: Address,
     allowances: Array<{ asset: string; amount: string }> = [
-      { asset: 'ytest.usd', amount: '1000000000' } // 1000 USDC with 6 decimals
-    ]
+      { asset: 'USDC', amount: '1000000000' } // 1000 USDC with 6 decimals
+    ],
+    forceReauth: boolean = false
   ): Promise<void> {
     console.log('[Auth] Starting authentication for:', userAddress);
+
+    // Check if we already have a valid session
+    if (!forceReauth && this.hasValidSession()) {
+      console.log('[Auth] Already authenticated with valid session');
+      console.log('[Auth] Session key:', this.sessionAddress);
+      console.log('[Auth] Time until expiry:', this.getTimeUntilExpiry(), 'seconds');
+      return;
+    }
+
+    // Clear any existing session before starting new authentication
+    if (this.sessionAddress || this.sessionPrivateKey) {
+      console.log('[Auth] Clearing existing session before new authentication');
+      await this.logout();
+
+      // Small delay to ensure server processes the logout
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
 
     // Generate temporary session key
     this.sessionPrivateKey = generatePrivateKey();
@@ -53,11 +80,11 @@ export class AuthService {
     // Calculate session expiry (1 hour from now)
     this.sessionExpiry = BigInt(Math.floor(Date.now() / 1000) + 3600);
 
-    // Prepare auth parameters
+    // Prepare auth parameters - use user's actual address, not session address
     const authParams = {
-      address: this.sessionAddress,
+      address: userAddress,  // Use checksummed address
       application: 'Nitrolite Prediction Market',
-      session_key: this.sessionAddress,
+      session_key: this.sessionAddress,  // Use checksummed session key
       allowances,
       expires_at: this.sessionExpiry,
       scope: 'prediction.market'
@@ -71,27 +98,70 @@ export class AuthService {
     return new Promise((resolve, reject) => {
       // Set up challenge handler
       const challengeHandler = async (data: any) => {
-        console.log('[Auth] Received auth challenge');
+        console.log('[Auth] Received auth challenge, data:', data);
 
         try {
           const challenge = data.res[2].challenge_message;
+          console.log('[Auth] Challenge message:', challenge);
 
           // Sign challenge with main wallet
-          const signer = createEIP712AuthMessageSigner(
-            walletClient,
-            authParams,
-            { name: 'Nitrolite Prediction Market' }
-          );
+          console.log('[Auth] Creating EIP-712 signer with params:', authParams);
+          console.log('[Auth] Wallet client:', walletClient);
 
-          const verifyMsg = await createAuthVerifyMessageFromChallenge(
-            signer,
-            challenge
-          );
+          try {
+            // Create signer with proper wallet client
+            const signerAccount = walletClient.account || userAddress;
+            console.log('[Auth] Using account for signer:', signerAccount);
 
-          console.log('[Auth] Sending auth verification...');
+            // Get the chain ID from the wallet client
+            const chainId = await walletClient.getChainId();
+            console.log('[Auth] Current chain ID:', chainId);
 
-          // Send verification
-          this.wsManager.send(JSON.parse(verifyMsg) as any);
+            // Create domain configuration for Yellow Network
+            // Based on the SDK's EIP-712 structure, try this exact configuration
+            const domain = {
+              name: 'Yellow Network',
+              version: '1',
+              chainId: 1,
+              verifyingContract: '0x0000000000000000000000000000000000000000' as `0x${string}`
+            };
+
+            console.log('[Auth] Creating signer with domain:', domain);
+            console.log('[Auth] Auth params being used:', authParams);
+
+            // Create the EIP-712 signer - this should trigger the wallet signing dialog
+            console.log('[Auth] About to create EIP-712 signer...');
+            console.log('[Auth] Wallet client chain:', await walletClient.getChainId());
+            console.log('[Auth] Wallet client account:', walletClient.account);
+
+            const signer = await createEIP712AuthMessageSigner(
+              walletClient,
+              authParams,
+              domain
+            );
+
+            console.log('[Auth] Signer created successfully, signing challenge...');
+
+            try {
+              // Create the verification message with the signed challenge
+              const verifyMsg = await createAuthVerifyMessageFromChallenge(
+                signer,
+                challenge
+              );
+
+              console.log('[Auth] Verification message created:', verifyMsg);
+
+              // Send verification message
+              this.wsManager.send(JSON.parse(verifyMsg) as any);
+            } catch (verifyError) {
+              console.error('[Auth] Error creating verify message:', verifyError);
+              console.error('[Auth] Error details:', verifyError);
+              throw verifyError;
+            }
+          } catch (signError) {
+            console.error('[Auth] Error during signing:', signError);
+            throw signError;
+          }
         } catch (error) {
           console.error('[Auth] Error handling challenge:', error);
           reject(error);
@@ -99,22 +169,54 @@ export class AuthService {
       };
 
       // Set up success handler
-      const successHandler = (_data: any) => {
-        console.log('[Auth] Authentication successful!');
+      const successHandler = (data: any) => {
+        console.log('[Auth] Authentication successful!', data);
         console.log('[Auth] Session key:', this.sessionAddress);
         console.log('[Auth] Session expires:', new Date(Number(this.sessionExpiry) * 1000));
 
         // Clean up listeners
         this.wsManager.removeListener('auth_challenge', challengeHandler);
         this.wsManager.removeListener('auth_success', successHandler);
+        this.wsManager.removeListener('error', errorHandler);
 
         resolve();
       };
 
       // Set up error handler
       const errorHandler = (data: any) => {
+        // Handle generic error responses (method === 'error')
+        if (data.res && data.res[1] === 'error') {
+          const errorDetails = data.res[2];
+          console.error('[Auth] Authentication error:', errorDetails);
+
+          let errorMessage = 'Authentication failed';
+          if (errorDetails?.error) {
+            errorMessage = errorDetails.error;
+
+            // Special handling for specific error messages
+            if (errorDetails.error === 'invalid challenge or signature') {
+              console.error('[Auth] Invalid signature - possible causes:');
+              console.error('  1. Challenge expired (>5 minutes)');
+              console.error('  2. Wrong wallet/chain');
+              console.error('  3. Session already exists');
+              errorMessage = 'Authentication failed: Invalid signature. Please try again.';
+            }
+          } else if (typeof errorDetails === 'string') {
+            errorMessage = errorDetails;
+          }
+
+          // Clean up listeners
+          this.wsManager.removeListener('auth_challenge', challengeHandler);
+          this.wsManager.removeListener('auth_success', successHandler);
+          this.wsManager.removeListener('error', errorHandler);
+
+          reject(new Error(errorMessage));
+          return;
+        }
+
+        // Check for auth_request errors
         if (data.res && data.res[1] === 'auth_request' && data.res[0] === 0) {
-          console.error('[Auth] Authentication error:', data.res[2]);
+          console.error('[Auth] Authentication request error:', data.res[2]);
 
           // Clean up listeners
           this.wsManager.removeListener('auth_challenge', challengeHandler);
@@ -123,15 +225,32 @@ export class AuthService {
 
           reject(new Error(data.res[2]));
         }
+
+        // Check for auth_verify errors
+        if (data.res && data.res[1] === 'auth_verify' && data.res[0] === 0) {
+          console.error('[Auth] Authentication verify error:', data.res[2]);
+
+          // Clean up listeners
+          this.wsManager.removeListener('auth_challenge', challengeHandler);
+          this.wsManager.removeListener('auth_success', successHandler);
+          this.wsManager.removeListener('error', errorHandler);
+
+          reject(new Error(`Authentication verification failed: ${data.res[2]}`));
+        }
       };
 
-      // Register listeners
+      // Register listeners BEFORE sending the request
+      console.log('[Auth] Registering event listeners...');
       this.wsManager.once('auth_challenge', challengeHandler);
       this.wsManager.once('auth_success', successHandler);
       this.wsManager.on('error', errorHandler);
 
-      // Send auth request
-      this.wsManager.send(JSON.parse(authRequestMsg) as any);
+      // Small delay to ensure handlers are registered
+      setTimeout(() => {
+        console.log('[Auth] Sending auth request message...');
+        // Send auth request
+        this.wsManager.send(JSON.parse(authRequestMsg) as any);
+      }, 100);
 
       // Timeout after 30 seconds
       setTimeout(() => {
@@ -192,10 +311,35 @@ export class AuthService {
   }
 
   /**
+   * Send logout/close session message to server
+   * @returns Promise that resolves when logout is complete
+   */
+  async logout(): Promise<void> {
+    console.log('[Auth] Sending logout request...');
+
+    try {
+      // Try to send a logout/close session message
+      // This is a best-effort attempt - we don't wait for response
+      const logoutMsg = {
+        req: [1, 'close_session', {}, Date.now()],
+        sig: []
+      };
+
+      this.wsManager.send(logoutMsg as any, false);
+      console.log('[Auth] Logout request sent');
+    } catch (error) {
+      console.warn('[Auth] Failed to send logout request:', error);
+    }
+
+    // Clear local session regardless
+    this.clearSession();
+  }
+
+  /**
    * Clear session data (logout)
    */
   clearSession(): void {
-    console.log('[Auth] Clearing session');
+    console.log('[Auth] Clearing local session data');
     this.sessionPrivateKey = null;
     this.sessionSigner = null;
     this.sessionAddress = null;

@@ -5,12 +5,13 @@
 
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useAccount } from 'wagmi';
+import { useAccount, usePublicClient } from 'wagmi';
+import { getWalletClient } from 'wagmi/actions';
 import { useStore } from '../store';
 import { getWebSocketManager } from '../services/websocket';
 import { getAuthService } from '../services/auth';
 import { getChannelManager } from '../services/channel';
-import { useWalletClient } from 'wagmi';
+import { wagmiConfig } from '../config/wagmi';
 
 /**
  * Home page component
@@ -19,9 +20,34 @@ import { useWalletClient } from 'wagmi';
 export const Home: React.FC = () => {
   const navigate = useNavigate();
   const { isConnected, address } = useAccount();
-  const { data: walletClient } = useWalletClient();
+  const publicClient = usePublicClient();
   const { websocket, setWebSocket, auth, setAuth, channel, setChannel, setTransaction } = useStore();
   const [isConnecting, setIsConnecting] = useState(false);
+  const [walletClient, setWalletClient] = useState<any>(null);
+  const [isWalletClientLoading, setIsWalletClientLoading] = useState(false);
+
+  // Get wallet client when connected
+  useEffect(() => {
+    const fetchWalletClient = async () => {
+      if (isConnected && address) {
+        setIsWalletClientLoading(true);
+        try {
+          const client = await getWalletClient(wagmiConfig, { account: address });
+          console.log('[Home] Wallet client fetched:', client);
+          setWalletClient(client);
+        } catch (error) {
+          console.error('[Home] Failed to get wallet client:', error);
+          setWalletClient(null);
+        } finally {
+          setIsWalletClientLoading(false);
+        }
+      } else {
+        setWalletClient(null);
+      }
+    };
+
+    fetchWalletClient();
+  }, [isConnected, address]);
 
   /**
    * Initialize WebSocket connection
@@ -62,8 +88,15 @@ export const Home: React.FC = () => {
    * Authenticates and creates a channel
    */
   const handleConnectToYellow = async () => {
-    if (!walletClient || !address) {
+    // Check if wallet is connected first
+    if (!isConnected || !address) {
       alert('Please connect your wallet first');
+      return;
+    }
+
+    // Check if wallet client is ready
+    if (!walletClient) {
+      alert('Wallet connection is not ready. Please try reconnecting your wallet.');
       return;
     }
 
@@ -71,26 +104,119 @@ export const Home: React.FC = () => {
     setTransaction({ isLoading: true, message: 'Connecting to Yellow Network...' });
 
     try {
+      // Check if we're on the correct chain (Sepolia)
+      const chainId = await walletClient.getChainId();
+      console.log('[Home] Current chain ID:', chainId);
+
+      const SEPOLIA_CHAIN_ID = 11155111;
+
+      if (chainId !== SEPOLIA_CHAIN_ID) {
+        console.log('[Home] Wrong chain detected, switching to Sepolia...');
+        setTransaction({ isLoading: true, message: 'Switching to Sepolia testnet...' });
+
+        try {
+          // Request chain switch
+          await walletClient.switchChain({ id: SEPOLIA_CHAIN_ID });
+          console.log('[Home] Successfully switched to Sepolia');
+        } catch (switchError: any) {
+          console.error('[Home] Failed to switch chain:', switchError);
+
+          // If the chain is not added, prompt user to add it
+          if (switchError.code === 4902) {
+            alert('Please add Sepolia testnet to your wallet and try again.');
+          } else {
+            alert('Please switch to Sepolia testnet in your wallet to continue.');
+          }
+
+          setIsConnecting(false);
+          setTransaction({ isLoading: false });
+          return;
+        }
+      }
+
       // Authenticate
       console.log('[Home] Authenticating...');
       const authService = getAuthService();
-      await authService.authenticate(walletClient, address);
 
-      setAuth({
-        isAuthenticated: true,
-        sessionKey: authService.getSessionAddress() || undefined,
-        sessionExpiry: BigInt(authService.getTimeUntilExpiry()),
-      });
+      try {
+        await authService.authenticate(walletClient, address);
 
-      setTransaction({ message: 'Creating channel...' });
+        setAuth({
+          isAuthenticated: true,
+          sessionKey: authService.getSessionAddress() || undefined,
+          sessionExpiry: BigInt(authService.getTimeUntilExpiry()),
+        });
+
+        setTransaction({ message: 'Creating channel...' });
+      } catch (authError: any) {
+        console.error('[Home] Authentication failed:', authError);
+
+        // Handle specific error cases
+        if (authError.message?.includes('invalid challenge or signature')) {
+          // For invalid signature, offer to force clear and retry
+          const shouldRetry = window.confirm(
+            'Authentication failed: Invalid signature.\n\n' +
+            'This usually happens when there\'s an existing session conflict.\n\n' +
+            'Would you like to force clear the session and try again?'
+          );
+
+          if (shouldRetry) {
+            console.log('[Home] User chose to force clear and retry');
+            setTransaction({ isLoading: true, message: 'Clearing session and retrying...' });
+
+            // Force clear and retry with a delay
+            const authService = getAuthService();
+            await authService.logout();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            try {
+              // Retry authentication with force flag
+              await authService.authenticate(walletClient, address, undefined, true);
+
+              setAuth({
+                isAuthenticated: true,
+                sessionKey: authService.getSessionAddress() || undefined,
+                sessionExpiry: BigInt(authService.getTimeUntilExpiry()),
+              });
+
+              setTransaction({ message: 'Creating channel...' });
+              // Continue with the flow...
+            } catch (retryError: any) {
+              console.error('[Home] Retry failed:', retryError);
+              alert(`Retry failed: ${retryError.message || 'Unknown error'}`);
+              setIsConnecting(false);
+              setTransaction({ isLoading: false });
+              return;
+            }
+          } else {
+            setIsConnecting(false);
+            setTransaction({ isLoading: false });
+            return;
+          }
+        } else if (authError.message?.includes('timeout')) {
+          alert('Authentication timed out. Please try again.');
+          setIsConnecting(false);
+          setTransaction({ isLoading: false });
+          return;
+        } else {
+          alert(`Authentication failed: ${authError.message || 'Unknown error'}`);
+          setIsConnecting(false);
+          setTransaction({ isLoading: false });
+          return;
+        }
+      }
 
       // Create channel
       console.log('[Home] Creating channel...');
       const channelManager = getChannelManager();
+
+      // Use publicClient with proper type assertion
+      if (!publicClient) {
+        throw new Error('Public client not available');
+      }
+
       channelManager.initializeClient(
-        walletClient.chain ?
-          { chain: walletClient.chain, transport: walletClient.transport } as any :
-          undefined as any,
+        publicClient as any,
         walletClient
       );
 
@@ -211,7 +337,7 @@ export const Home: React.FC = () => {
               {!channel.isOpen && (
                 <button
                   onClick={handleConnectToYellow}
-                  disabled={!isConnected || !websocket.isConnected || isConnecting}
+                  disabled={!isConnected || !websocket.isConnected || isConnecting || isWalletClientLoading || !walletClient}
                   className="p-4 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 disabled:from-gray-600 disabled:to-gray-700 rounded-lg transition-all"
                 >
                   <div className="flex items-center justify-center space-x-2">
@@ -219,7 +345,10 @@ export const Home: React.FC = () => {
                     <div className="text-left">
                       <p className="font-semibold">Connect to Yellow Network</p>
                       <p className="text-sm opacity-80">
-                        {isConnecting ? 'Connecting...' : 'Authenticate & create channel'}
+                        {isConnecting ? 'Connecting...' :
+                         isWalletClientLoading ? 'Preparing wallet...' :
+                         !walletClient ? 'Wallet not ready' :
+                         'Authenticate & create channel'}
                       </p>
                     </div>
                   </div>

@@ -19,7 +19,7 @@ A fully-commented demonstration of a prediction market built on Yellow Network u
 ### Smart Contract Integration
 - **Nitrolite Contracts**: State channel implementation on Sepolia
 - **Yellow Network**: Off-chain scalability layer
-- **Test Token (ytest.usd)**: USDC-like token for testing
+- **Test Token (USDC)**: USDC-like token for testing
 
 ## 🚀 Quick Start
 

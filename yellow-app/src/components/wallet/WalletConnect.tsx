@@ -29,6 +29,18 @@ export const WalletConnect: React.FC = () => {
     token: import.meta.env.VITE_TEST_TOKEN_ADDRESS as `0x${string}`,
   });
 
+  // Debug log token balance
+  useEffect(() => {
+    if (tokenBalance) {
+      console.log('Token Balance Data:', {
+        value: tokenBalance.value?.toString(),
+        decimals: tokenBalance.decimals,
+        symbol: tokenBalance.symbol,
+        formatted: tokenBalance.formatted
+      });
+    }
+  }, [tokenBalance]);
+
   // Update store when wallet state changes
   useEffect(() => {
     setWallet({
@@ -93,8 +105,8 @@ export const WalletConnect: React.FC = () => {
             <span className="font-mono">{formatBalance(ethBalance?.value)}</span>
           </div>
           <div className="flex items-center space-x-2">
-            <span>USDC:</span>
-            <span className="font-mono">{formatBalance(tokenBalance?.value, 6)}</span>
+            <span>{tokenBalance?.symbol || 'USDC'}:</span>
+            <span className="font-mono">{formatBalance(tokenBalance?.value, tokenBalance?.decimals || 6)}</span>
           </div>
         </div>
 

@@ -92,6 +92,7 @@ export class WebSocketManager extends EventEmitter {
             // Emit typed events for different message types
             this.emit('message', data);
             if (messageType) {
+              console.log(`[WS] Emitting event: ${messageType}, listeners:`, this.listenerCount(messageType));
               this.emit(messageType, data);
             }
           } catch (error) {
@@ -229,17 +230,32 @@ export class WebSocketManager extends EventEmitter {
     if (data.res) {
       const method = data.res[1];
 
+      // Log the message parsing for debugging
+      console.log(`[WS] Parsing message type for method: ${method}, status: ${data.res[0]}`);
+
+      // Special case: 'error' method indicates an error response
+      if (method === 'error') {
+        console.log('[WS] Error response detected:', data.res[2]);
+        return 'error';
+      }
+
       switch (method) {
         case 'auth_request':
-          // Check if it's a challenge response
-          if (data.res[2]?.challenge_message) {
+          // Check if it's an auth_challenge response (special case)
+          if (data.res[0] === 1 && data.res[2]?.challenge_message) {
+            console.log('[WS] Detected auth_challenge in auth_request response');
             return 'auth_challenge';
           }
           return 'auth_request';
+        case 'auth_challenge':
+          return 'auth_challenge';
         case 'auth_verify':
+          // When auth_verify succeeds (res[0] === 1), emit as auth_success
           if (data.res[0] === 1) {
+            console.log('[WS] Auth verify successful, emitting auth_success');
             return 'auth_success';
           }
+          console.log('[WS] Auth verify failed or pending');
           return 'auth_verify';
         case 'create_channel':
           return 'create_channel';
