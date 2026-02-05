@@ -47,9 +47,7 @@ export class AuthService {
   async authenticate(
     walletClient: WalletClient,
     userAddress: Address,
-    allowances: Array<{ asset: string; amount: string }> = [
-      { asset: 'USDC', amount: '1000000000' } // 1000 USDC with 6 decimals
-    ],
+    allowances: Array<{ asset: string; amount: string }> = [], // Empty allowances for now
     forceReauth: boolean = false
   ): Promise<void> {
     console.log('[Auth] Starting authentication for:', userAddress);
@@ -118,12 +116,9 @@ export class AuthService {
             console.log('[Auth] Current chain ID:', chainId);
 
             // Create domain configuration for Yellow Network
-            // Based on the SDK's EIP-712 structure, try this exact configuration
+            // According to Nitrolite docs, domain only needs 'name' for auth
             const domain = {
-              name: 'Yellow Network',
-              version: '1',
-              chainId: 1,
-              verifyingContract: '0x0000000000000000000000000000000000000000' as `0x${string}`
+              name: 'Nitrolite Prediction Market'
             };
 
             console.log('[Auth] Creating signer with domain:', domain);
