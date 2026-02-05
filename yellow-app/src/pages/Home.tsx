@@ -1,30 +1,31 @@
 /**
  * Home Page Component
- * Landing page with wallet connection and quick actions
+ * Landing page with wallet connection and Yellow Network integration
  */
 
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useAccount, usePublicClient } from 'wagmi';
+import { useAccount } from 'wagmi';
 import { getWalletClient } from 'wagmi/actions';
 import { useStore } from '../store';
-import { getWebSocketManager } from '../services/websocket';
-import { getAuthService } from '../services/auth';
-import { getChannelManager } from '../services/channel';
+import { getYellowClient, YellowClientState } from '../services/yellow-client';
 import { wagmiConfig } from '../config/wagmi';
 
-/**
- * Home page component
- * Shows welcome message, wallet status, and quick actions
- */
 export const Home: React.FC = () => {
   const navigate = useNavigate();
   const { isConnected, address } = useAccount();
-  const publicClient = usePublicClient();
-  const { websocket, setWebSocket, auth, setAuth, channel, setChannel, setTransaction } = useStore();
+  const { auth, setAuth, channel, setChannel, setTransaction } = useStore();
+
   const [isConnecting, setIsConnecting] = useState(false);
   const [walletClient, setWalletClient] = useState<any>(null);
   const [isWalletClientLoading, setIsWalletClientLoading] = useState(false);
+  const [yellowState, setYellowState] = useState<YellowClientState>({
+    isConnected: false,
+    isAuthenticated: false,
+    sessionKey: null,
+    sessionExpiry: null,
+  });
+  const [connectionStatus, setConnectionStatus] = useState<string>('Disconnected');
 
   // Get wallet client when connected
   useEffect(() => {
@@ -33,7 +34,6 @@ export const Home: React.FC = () => {
         setIsWalletClientLoading(true);
         try {
           const client = await getWalletClient(wagmiConfig, { account: address });
-          console.log('[Home] Wallet client fetched:', client);
           setWalletClient(client);
         } catch (error) {
           console.error('[Home] Failed to get wallet client:', error);
@@ -45,56 +45,35 @@ export const Home: React.FC = () => {
         setWalletClient(null);
       }
     };
-
     fetchWalletClient();
   }, [isConnected, address]);
 
-  /**
-   * Initialize WebSocket connection
-   */
+  // Initialize Yellow Network connection on mount
   useEffect(() => {
-    const wsManager = getWebSocketManager(import.meta.env.VITE_YELLOW_WS_URL);
-
-    // Connect to WebSocket
-    wsManager.connect().then(() => {
-      console.log('[Home] WebSocket connected');
-      setWebSocket({ isConnected: true });
-    }).catch((error) => {
-      console.error('[Home] WebSocket connection failed:', error);
-      setWebSocket({ isConnected: false, connectionError: error.message });
-    });
-
-    // Listen for connection events
-    wsManager.on('connected', () => {
-      setWebSocket({ isConnected: true, connectionError: undefined });
-    });
-
-    wsManager.on('disconnected', () => {
-      setWebSocket({ isConnected: false });
-    });
-
-    wsManager.on('error', (error) => {
-      setWebSocket({ connectionError: error.message });
-    });
-
-    // Cleanup
-    return () => {
-      wsManager.removeAllListeners();
+    const initYellow = async () => {
+      try {
+        setConnectionStatus('Connecting...');
+        const yellowClient = getYellowClient();
+        await yellowClient.connect();
+        setConnectionStatus('Connected');
+        setYellowState(prev => ({ ...prev, isConnected: true }));
+      } catch (error: any) {
+        console.error('[Home] Yellow connection failed:', error);
+        setConnectionStatus(`Error: ${error.message}`);
+      }
     };
-  }, [setWebSocket]);
+    initYellow();
+  }, []);
 
   /**
-   * Connect to Yellow Network
-   * Authenticates and creates a channel
+   * Connect and authenticate with Yellow Network
    */
   const handleConnectToYellow = async () => {
-    // Check if wallet is connected first
     if (!isConnected || !address) {
       alert('Please connect your wallet first');
       return;
     }
 
-    // Check if wallet client is ready
     if (!walletClient) {
       alert('Wallet connection is not ready. Please try reconnecting your wallet.');
       return;
@@ -104,151 +83,60 @@ export const Home: React.FC = () => {
     setTransaction({ isLoading: true, message: 'Connecting to Yellow Network...' });
 
     try {
-      // Check if we're on the correct chain (Sepolia)
+      // Check chain
       const chainId = await walletClient.getChainId();
-      console.log('[Home] Current chain ID:', chainId);
-
       const SEPOLIA_CHAIN_ID = 11155111;
 
       if (chainId !== SEPOLIA_CHAIN_ID) {
-        console.log('[Home] Wrong chain detected, switching to Sepolia...');
-        setTransaction({ isLoading: true, message: 'Switching to Sepolia testnet...' });
-
+        setTransaction({ isLoading: true, message: 'Switching to Sepolia...' });
         try {
-          // Request chain switch
           await walletClient.switchChain({ id: SEPOLIA_CHAIN_ID });
-          console.log('[Home] Successfully switched to Sepolia');
         } catch (switchError: any) {
-          console.error('[Home] Failed to switch chain:', switchError);
-
-          // If the chain is not added, prompt user to add it
-          if (switchError.code === 4902) {
-            alert('Please add Sepolia testnet to your wallet and try again.');
-          } else {
-            alert('Please switch to Sepolia testnet in your wallet to continue.');
-          }
-
+          alert('Please switch to Sepolia testnet in your wallet.');
           setIsConnecting(false);
           setTransaction({ isLoading: false });
           return;
         }
       }
 
-      // Authenticate
-      console.log('[Home] Authenticating...');
-      const authService = getAuthService();
+      // Authenticate with Yellow Network
+      setTransaction({ isLoading: true, message: 'Authenticating with Yellow Network...' });
 
-      try {
-        await authService.authenticate(walletClient, address);
+      const yellowClient = getYellowClient();
+      await yellowClient.authenticate(walletClient, address);
 
-        setAuth({
-          isAuthenticated: true,
-          sessionKey: authService.getSessionAddress() || undefined,
-          sessionExpiry: BigInt(authService.getTimeUntilExpiry()),
-        });
+      const state = yellowClient.getState();
+      setYellowState(state);
 
-        setTransaction({ message: 'Creating channel...' });
-      } catch (authError: any) {
-        console.error('[Home] Authentication failed:', authError);
+      setAuth({
+        isAuthenticated: true,
+        sessionKey: state.sessionKey || undefined,
+        sessionExpiry: state.sessionExpiry ? BigInt(state.sessionExpiry) : undefined,
+      });
 
-        // Handle specific error cases
-        if (authError.message?.includes('invalid challenge or signature')) {
-          // For invalid signature, offer to force clear and retry
-          const shouldRetry = window.confirm(
-            'Authentication failed: Invalid signature.\n\n' +
-            'This usually happens when there\'s an existing session conflict.\n\n' +
-            'Would you like to force clear the session and try again?'
-          );
+      // For now, mark channel as open after auth (channel creation will be added later)
+      setChannel({
+        isOpen: true,
+        channelId: 'authenticated',
+        balance: 0n,
+        lockedBalance: 0n,
+      });
 
-          if (shouldRetry) {
-            console.log('[Home] User chose to force clear and retry');
-            setTransaction({ isLoading: true, message: 'Clearing session and retrying...' });
+      setTransaction({
+        isLoading: false,
+        message: 'Successfully connected to Yellow Network!',
+      });
 
-            // Force clear and retry with a delay
-            const authService = getAuthService();
-            await authService.logout();
-            await new Promise(resolve => setTimeout(resolve, 1000));
+      // Navigate to market
+      setTimeout(() => navigate('/market'), 1500);
 
-            try {
-              // Retry authentication with force flag
-              await authService.authenticate(walletClient, address, undefined, true);
-
-              setAuth({
-                isAuthenticated: true,
-                sessionKey: authService.getSessionAddress() || undefined,
-                sessionExpiry: BigInt(authService.getTimeUntilExpiry()),
-              });
-
-              setTransaction({ message: 'Creating channel...' });
-              // Continue with the flow...
-            } catch (retryError: any) {
-              console.error('[Home] Retry failed:', retryError);
-              alert(`Retry failed: ${retryError.message || 'Unknown error'}`);
-              setIsConnecting(false);
-              setTransaction({ isLoading: false });
-              return;
-            }
-          } else {
-            setIsConnecting(false);
-            setTransaction({ isLoading: false });
-            return;
-          }
-        } else if (authError.message?.includes('timeout')) {
-          alert('Authentication timed out. Please try again.');
-          setIsConnecting(false);
-          setTransaction({ isLoading: false });
-          return;
-        } else {
-          alert(`Authentication failed: ${authError.message || 'Unknown error'}`);
-          setIsConnecting(false);
-          setTransaction({ isLoading: false });
-          return;
-        }
-      }
-
-      // Create channel
-      console.log('[Home] Creating channel...');
-      const channelManager = getChannelManager();
-
-      // Use publicClient with proper type assertion
-      if (!publicClient) {
-        throw new Error('Public client not available');
-      }
-
-      channelManager.initializeClient(
-        publicClient as any,
-        walletClient
-      );
-
-      const result = await channelManager.createChannel();
-
-      if (result.success) {
-        setChannel({
-          isOpen: true,
-          channelId: result.channelId,
-          balance: 0n,
-          lockedBalance: 0n,
-        });
-
-        setTransaction({
-          isLoading: false,
-          message: 'Successfully connected to Yellow Network!',
-          hash: result.transactionHash
-        });
-
-        // Navigate to market after successful connection
-        setTimeout(() => {
-          navigate('/market');
-        }, 2000);
-      } else {
-        throw new Error(result.error || 'Failed to create channel');
-      }
     } catch (error: any) {
       console.error('[Home] Connection failed:', error);
       setTransaction({
         isLoading: false,
-        error: error.message || 'Failed to connect to Yellow Network'
+        error: error.message || 'Failed to connect',
       });
+      alert(`Connection failed: ${error.message}`);
     } finally {
       setIsConnecting(false);
     }
@@ -266,63 +154,49 @@ export const Home: React.FC = () => {
             Decentralized prediction markets powered by Yellow Network
           </p>
 
-          {/* Demo Notice */}
           <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-4 max-w-2xl mx-auto mb-8">
             <p className="text-yellow-400 text-sm">
-              ⚠️ This is a test implementation on Sepolia testnet.
-              All code is thoroughly commented for educational purposes.
+              Sepolia Testnet - Using yellow-ts SDK
             </p>
           </div>
         </div>
 
-        {/* Main Content */}
         <div className="max-w-4xl mx-auto">
           {/* Connection Status */}
           <div className="bg-gray-900 rounded-lg p-6 mb-8">
             <h2 className="text-2xl font-semibold mb-4">Connection Status</h2>
 
             <div className="space-y-3">
-              {/* Wallet Connection */}
+              {/* Wallet */}
               <div className="flex items-center justify-between p-3 bg-gray-800 rounded">
                 <div className="flex items-center space-x-2">
                   <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500' : 'bg-gray-500'}`} />
                   <span>Wallet</span>
                 </div>
                 <span className="text-sm text-gray-400">
-                  {isConnected ? `Connected: ${address?.slice(0, 6)}...${address?.slice(-4)}` : 'Not connected'}
+                  {isConnected ? `${address?.slice(0, 6)}...${address?.slice(-4)}` : 'Not connected'}
                 </span>
               </div>
 
-              {/* WebSocket Connection */}
+              {/* Yellow Network */}
               <div className="flex items-center justify-between p-3 bg-gray-800 rounded">
                 <div className="flex items-center space-x-2">
-                  <div className={`w-3 h-3 rounded-full ${websocket.isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
-                  <span>WebSocket</span>
+                  <div className={`w-3 h-3 rounded-full ${yellowState.isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
+                  <span>Yellow Network</span>
                 </div>
-                <span className="text-sm text-gray-400">
-                  {websocket.isConnected ? 'Connected to Yellow Network' : websocket.connectionError || 'Connecting...'}
-                </span>
+                <span className="text-sm text-gray-400">{connectionStatus}</span>
               </div>
 
               {/* Authentication */}
               <div className="flex items-center justify-between p-3 bg-gray-800 rounded">
                 <div className="flex items-center space-x-2">
-                  <div className={`w-3 h-3 rounded-full ${auth.isAuthenticated ? 'bg-green-500' : 'bg-gray-500'}`} />
+                  <div className={`w-3 h-3 rounded-full ${yellowState.isAuthenticated || auth.isAuthenticated ? 'bg-green-500' : 'bg-gray-500'}`} />
                   <span>Authentication</span>
                 </div>
                 <span className="text-sm text-gray-400">
-                  {auth.isAuthenticated ? 'Authenticated' : 'Not authenticated'}
-                </span>
-              </div>
-
-              {/* Channel */}
-              <div className="flex items-center justify-between p-3 bg-gray-800 rounded">
-                <div className="flex items-center space-x-2">
-                  <div className={`w-3 h-3 rounded-full ${channel.isOpen ? 'bg-green-500' : 'bg-gray-500'}`} />
-                  <span>Payment Channel</span>
-                </div>
-                <span className="text-sm text-gray-400">
-                  {channel.isOpen ? `Open: ${channel.channelId?.slice(0, 8)}...` : 'No channel'}
+                  {yellowState.isAuthenticated || auth.isAuthenticated
+                    ? `Session: ${yellowState.sessionKey?.slice(0, 8)}...`
+                    : 'Not authenticated'}
                 </span>
               </div>
             </div>
@@ -334,10 +208,10 @@ export const Home: React.FC = () => {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Connect to Yellow */}
-              {!channel.isOpen && (
+              {!auth.isAuthenticated && (
                 <button
                   onClick={handleConnectToYellow}
-                  disabled={!isConnected || !websocket.isConnected || isConnecting || isWalletClientLoading || !walletClient}
+                  disabled={!isConnected || !yellowState.isConnected || isConnecting || isWalletClientLoading}
                   className="p-4 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 disabled:from-gray-600 disabled:to-gray-700 rounded-lg transition-all"
                 >
                   <div className="flex items-center justify-center space-x-2">
@@ -347,19 +221,31 @@ export const Home: React.FC = () => {
                       <p className="text-sm opacity-80">
                         {isConnecting ? 'Connecting...' :
                          isWalletClientLoading ? 'Preparing wallet...' :
-                         !walletClient ? 'Wallet not ready' :
-                         'Authenticate & create channel'}
+                         !yellowState.isConnected ? 'WebSocket connecting...' :
+                         'Authenticate with signature'}
                       </p>
                     </div>
                   </div>
                 </button>
               )}
 
+              {/* Already Connected */}
+              {auth.isAuthenticated && (
+                <div className="p-4 bg-green-900/30 border border-green-600/30 rounded-lg">
+                  <div className="flex items-center justify-center space-x-2">
+                    <span className="text-2xl">✅</span>
+                    <div className="text-left">
+                      <p className="font-semibold text-green-400">Connected!</p>
+                      <p className="text-sm text-green-300">Ready to use Yellow Network</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Go to Market */}
               <button
                 onClick={() => navigate('/market')}
-                disabled={!channel.isOpen}
-                className="p-4 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 disabled:from-gray-600 disabled:to-gray-700 rounded-lg transition-all"
+                className="p-4 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 rounded-lg transition-all"
               >
                 <div className="flex items-center justify-center space-x-2">
                   <span className="text-2xl">📊</span>
@@ -370,16 +256,16 @@ export const Home: React.FC = () => {
                 </div>
               </button>
 
-              {/* Deposit Funds */}
+              {/* Test Page */}
               <button
-                disabled={!channel.isOpen}
-                className="p-4 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 disabled:from-gray-600 disabled:to-gray-700 rounded-lg transition-all"
+                onClick={() => navigate('/test')}
+                className="p-4 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 rounded-lg transition-all"
               >
                 <div className="flex items-center justify-center space-x-2">
-                  <span className="text-2xl">💰</span>
+                  <span className="text-2xl">🧪</span>
                   <div className="text-left">
-                    <p className="font-semibold">Deposit Funds</p>
-                    <p className="text-sm opacity-80">Add USDC to channel</p>
+                    <p className="font-semibold">Test Connection</p>
+                    <p className="text-sm opacity-80">Debug Yellow Network</p>
                   </div>
                 </div>
               </button>
@@ -404,11 +290,10 @@ export const Home: React.FC = () => {
           <div className="mt-8 bg-gray-900 rounded-lg p-6">
             <h2 className="text-2xl font-semibold mb-4">How to Use</h2>
             <ol className="space-y-2 text-gray-300">
-              <li>1. Connect your MetaMask wallet to Sepolia testnet</li>
+              <li>1. Connect your MetaMask wallet (Sepolia testnet)</li>
               <li>2. Click "Connect to Yellow Network" to authenticate</li>
-              <li>3. Deposit test USDC into your payment channel</li>
-              <li>4. Navigate to the Market page to place predictions</li>
-              <li>5. Use the Admin panel to create or resolve markets</li>
+              <li>3. Sign the message in MetaMask</li>
+              <li>4. Navigate to Market to place predictions</li>
             </ol>
           </div>
         </div>
