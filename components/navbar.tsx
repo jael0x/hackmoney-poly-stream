@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { User as SupabaseUser } from '@supabase/supabase-js';
 import { Gamepad2, Search, TrendingUp, User as UserIcon } from 'lucide-react';
 import { Input } from '@/components/ui/input';
+import WalletConnect from './wallet-connect';
 
 export function Navbar() {
   const [user, setUser] = useState<SupabaseUser | null>(null);
@@ -48,9 +49,8 @@ export function Navbar() {
             <div className="hidden md:flex items-center gap-6">
               <Link
                 href="/"
-                className={`flex items-center gap-2 text-sm font-medium transition-colors hover:text-purple-400 ${
-                  pathname === '/' ? 'text-purple-400' : 'text-gray-400'
-                }`}
+                className={`flex items-center gap-2 text-sm font-medium transition-colors hover:text-purple-400 ${pathname === '/' ? 'text-purple-400' : 'text-gray-400'
+                  }`}
               >
                 <TrendingUp className="h-4 w-4" />
                 Markets
@@ -99,18 +99,12 @@ export function Navbar() {
             ) : (
               <>
                 <Button
-                  variant="ghost"
-                  className="text-gray-300 hover:text-white hover:bg-gray-800"
+                  className="bg-purple-600 hover:bg-purple-700 text-white"
                   asChild
                 >
                   <Link href="/login">Log In</Link>
                 </Button>
-                <Button
-                  className="bg-purple-600 hover:bg-purple-700 text-white"
-                  asChild
-                >
-                  <Link href="/signup">Sign Up</Link>
-                </Button>
+                <WalletConnect />
               </>
             )}
           </div>
