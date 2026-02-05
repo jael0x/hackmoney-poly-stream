@@ -78,25 +78,34 @@ export class AuthService {
     // Calculate session expiry (1 hour from now)
     this.sessionExpiry = BigInt(Math.floor(Date.now() / 1000) + 3600);
 
-    // Prepare auth parameters - use user's actual address, not session address
+    // Prepare auth parameters according to official docs
     const authParams = {
-      address: userAddress,  // Use checksummed address
+      address: userAddress,
+      session_key: this.sessionAddress,
       application: 'Nitrolite Prediction Market',
-      session_key: this.sessionAddress,  // Use checksummed session key
-      allowances,
       expires_at: this.sessionExpiry,
+      allowances,
       scope: 'prediction.market'
     };
 
     // Create and send auth request
     const authRequestMsg = await createAuthRequestMessage(authParams);
 
+    console.log('[Auth] Auth params:', JSON.stringify(authParams, (_, v) => typeof v === 'bigint' ? v.toString() : v));
+    console.log('[Auth] Auth request message:', authRequestMsg);
     console.log('[Auth] Sending auth request...');
 
     return new Promise((resolve, reject) => {
+      // Debug: log ALL incoming messages during auth
+      const debugHandler = (data: unknown) => {
+        console.log('[Auth][DEBUG] Raw message received:', JSON.stringify(data, null, 2));
+      };
+      this.wsManager.on('message', debugHandler);
+
       // Set up challenge handler
       const challengeHandler = async (data: any) => {
         console.log('[Auth] Received auth challenge, data:', data);
+        this.wsManager.removeListener('message', debugHandler);
 
         try {
           const challenge = data.res[2].challenge_message;

@@ -11,6 +11,7 @@ import { Header } from './components/layout/Header';
 import { Home } from './pages/Home';
 import { Market } from './pages/Market';
 import { Admin } from './pages/Admin';
+import { TestYellow } from './pages/TestYellow';
 
 // Create a query client for React Query
 const queryClient = new QueryClient();
@@ -30,6 +31,7 @@ function App() {
               <Route path="/" element={<Home />} />
               <Route path="/market" element={<Market />} />
               <Route path="/admin" element={<Admin />} />
+              <Route path="/test" element={<TestYellow />} />
             </Routes>
           </div>
         </Router>

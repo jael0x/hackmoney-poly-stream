@@ -265,8 +265,22 @@ export class WebSocketManager extends EventEmitter {
           return 'close_channel';
         case 'get_config':
           return 'get_config';
+        case 'get_assets':
+          return 'get_config'; // Reuse get_config type
+        // Server push notifications - NOT errors
+        case 'bu': // balance update
+        case 'assets':
+        case 'channels':
+        case 'cu': // channel update
+        case 'ping':
+        case 'pong':
+        case 'tr': // transfer notification
+        case 'asu': // app session update
+          console.log(`[WS] Server notification: ${method}`);
+          return null; // Ignore notifications, don't treat as errors
         default:
-          if (data.res[0] === 0) {
+          // Only treat as error if status is 0 AND it's not a notification
+          if (data.res[0] === 0 && data.res[2]?.error) {
             return 'error';
           }
           return null;
