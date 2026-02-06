@@ -9,12 +9,18 @@ import { Navbar } from '@/components/navbar';
 
 import { wagmiConfig } from '@/lib/yellow/wagmi';
 import { getYellowClient } from '@/lib/yellow/yellow-client';
-import React, { useState } from 'react';
-import { useConnection } from 'wagmi';
-import { getWalletClient } from 'wagmi/actions';
+import { useState } from 'react';
+import { useAccount } from 'wagmi';
+import { getWalletClient } from '@wagmi/core';
+
+declare global {
+  interface Window {
+    ethereum?: any;
+  }
+}
 
 export default function TestYellow() {
-  const { isConnected, address } = useConnection();
+  const { isConnected, address } = useAccount();
   const [status, setStatus] = useState<string>('Not started');
   const [logs, setLogs] = useState<string[]>([]);
 

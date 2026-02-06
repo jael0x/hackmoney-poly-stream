@@ -7,18 +7,21 @@
  */
 
 import React, { useEffect } from 'react';
-import { useAccount, useConnect, useDisconnect, useBalance } from 'wagmi';
+import { useAccount, useConnect, useDisconnect, useBalance, useSwitchChain } from 'wagmi';
+import { sepolia } from 'wagmi/chains';
 // import { useStore } from '../../store';
 import { formatEther, Address } from 'viem';
+import { Button } from '@/components/ui/button';
 
 /**
  * WalletConnect component
  * Displays wallet connection button and connected wallet info
  */
 export default function WalletConnect() {
-  const { address, isConnected } = useAccount();
+  const { address, isConnected, chainId } = useAccount();
   const { connect, connectors, isPending, error } = useConnect();
   const { disconnect } = useDisconnect();
+  const { switchChain } = useSwitchChain();
   // const { setWallet } = useStore();
 
   // Get ETH balance
@@ -29,7 +32,7 @@ export default function WalletConnect() {
   // Get token balance
   const { data: tokenBalance } = useBalance({
     address,
-    // token: process.env.NEXT_PUBLIC_USDC_TOKEN_ADDRESS as Address,
+    token: process.env.NEXT_PUBLIC_USDC_TOKEN_ADDRESS as Address,
   });
 
   // Debug log token balance
@@ -44,6 +47,14 @@ export default function WalletConnect() {
     }
   }, [tokenBalance]);
 
+  // Auto-switch to Sepolia when connected to wrong network
+  useEffect(() => {
+    if (isConnected && chainId !== sepolia.id) {
+      console.log('[WalletConnect] Wrong network detected, switching to Sepolia...');
+      switchChain({ chainId: sepolia.id });
+    }
+  }, [isConnected, chainId, switchChain]);
+
   // // Update store when wallet state changes
   // useEffect(() => {
   //   setWallet({
@@ -57,11 +68,15 @@ export default function WalletConnect() {
   /**
    * Handle wallet connection
    */
-  const handleConnect = () => {
+  const handleConnect = async () => {
     // Use the first available connector (MetaMask)
     const connector = connectors[0];
     if (connector) {
-      connect({ connector });
+      // Connect with Sepolia chain ID to prompt network switch
+      connect({
+        connector,
+        chainId: sepolia.id
+      });
     }
   };
 
@@ -101,6 +116,7 @@ export default function WalletConnect() {
   if (isConnected && address) {
     return (
       <div className="flex items-center space-x-4">
+
         {/* Balance Display */}
         <div className="text-sm text-gray-300">
           <div className="flex items-center space-x-2">
@@ -113,20 +129,13 @@ export default function WalletConnect() {
           </div>
         </div>
 
-        {/* Address Display */}
-        <div className="bg-gray-700 px-3 py-2 rounded-lg">
-          <span className="text-green-400 text-sm font-mono">
-            {formatAddress(address)}
-          </span>
-        </div>
-
         {/* Disconnect Button */}
-        <button
+        <Button
           onClick={handleDisconnect}
-          className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
+          className="px-4 py-2 bg-gray-700 hover:bg-red-800 text-white transition-colors"
         >
-          Disconnect
-        </button>
+          {formatAddress(address)}
+        </Button>
       </div>
     );
   }
@@ -134,13 +143,13 @@ export default function WalletConnect() {
   return (
     <div>
       {/* Connect Button */}
-      <button
+      <Button
         onClick={handleConnect}
         disabled={isPending}
-        className="px-6 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 text-white rounded-lg transition-colors"
+        className="px-6 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 text-white transition-colors"
       >
         {isPending ? 'Connecting...' : 'Connect Wallet'}
-      </button>
+      </Button>
 
       {/* Error Display */}
       {error && (

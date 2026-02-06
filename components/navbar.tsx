@@ -72,6 +72,7 @@ export function Navbar() {
           <div className="flex items-center gap-3">
             {user ? (
               <>
+                <WalletConnect />
                 <Button
                   className="bg-blue-600 hover:bg-blue-700 text-white"
                   asChild
@@ -98,13 +99,13 @@ export function Navbar() {
               </>
             ) : (
               <>
+                <WalletConnect />
                 <Button
                   className="bg-purple-600 hover:bg-purple-700 text-white"
                   asChild
                 >
                   <Link href="/login">Log In</Link>
                 </Button>
-                <WalletConnect />
               </>
             )}
           </div>

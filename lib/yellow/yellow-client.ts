@@ -13,6 +13,7 @@ import {
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import type { WalletClient, Address } from 'viem';
 
+const YELLOW_WS_URL = process.env.NEXT_PUBLIC_YELLOW_WS_URL || 'wss://clearnet.yellow.com/ws';
 
 export interface YellowClientState {
   isConnected: boolean;
@@ -29,7 +30,7 @@ export class YellowClientService {
   private sessionExpiry: number | null = null;
   private isAuthenticated = false;
 
-  constructor(url: string = process.env.NEXT_PUBLIC_YELLOW_WS_URL || 'wss://clearnet-sandbox.yellow.com/ws') {
+  constructor(url: string = YELLOW_WS_URL) {
     this.client = new Client({
       url,
       requestTimeoutMs: 30000,
@@ -76,82 +77,113 @@ export class YellowClientService {
     this.sessionAddress = sessionAccount.address;
     this.sessionExpiry = Math.floor(Date.now() / 1000) + 3600;
 
-    // Auth params
-    const authParams = {
-      address: userAddress,
-      session_key: this.sessionAddress,
-      application: 'Nitrolite Prediction Market',
-      expires_at: BigInt(this.sessionExpiry),
-      allowances: [],
-      scope: 'console',
-    };
+    // Create a promise to handle the async authentication flow
+    return new Promise(async (resolve, reject) => {
+      let authChallengeReceived = false;
 
-    console.log('[YellowClient] Auth params:', authParams);
+      // Set up listener for auth challenge BEFORE sending auth request
+      const handleMessage = async (message: any) => {
+        console.log('[YellowClient] Received message:', message);
 
-    // Create auth request message
-    const authRequestMsg = await createAuthRequestMessage(authParams);
-    console.log('[YellowClient] Auth request message:', authRequestMsg);
+        // Check if this is an auth challenge response
+        if (message?.method === 'auth_challenge' ||
+            message?.res?.[1] === 'auth_challenge') {
 
-    // Send auth request and wait for challenge
-    const authResponse = await this.client.sendMessage(JSON.parse(authRequestMsg));
-    console.log('[YellowClient] Auth response:', authResponse);
-    console.log('[YellowClient] Auth response (JSON):', JSON.stringify(authResponse, null, 2));
-    console.log('[YellowClient] res[1]:', authResponse?.res?.[1]);
-    console.log('[YellowClient] res[2]:', authResponse?.res?.[2]);
+          if (authChallengeReceived) return; // Prevent duplicate handling
+          authChallengeReceived = true;
 
-    // Check if we got a challenge - try different formats
-    const challengeMessage =
-      authResponse?.res?.[2]?.challenge_message ||
-      authResponse?.res?.[2]?.challengeMessage ||
-      authResponse?.params?.challenge_message ||
-      authResponse?.params?.challengeMessage;
+          console.log('[YellowClient] Auth challenge received:', JSON.stringify(message, null, 2));
 
-    console.log('[YellowClient] Challenge message found:', challengeMessage);
+          try {
+            // Create auth params matching the challenge requirements
+            const authParams = {
+              scope: 'console', // or 'test.app' depending on your setup
+              application: userAddress, // Using user address as application
+              participant: this.sessionAddress!,
+              expire: String(this.sessionExpiry!),
+              allowances: [],
+              session_key: this.sessionAddress!,
+              expires_at: BigInt(this.sessionExpiry!),
+            };
 
-    if (challengeMessage) {
-      console.log('[YellowClient] Got challenge:', challengeMessage);
+            console.log('[YellowClient] Creating EIP-712 signer with params:', authParams);
 
-      // Create EIP-712 signer for the challenge
-      const domain = { name: 'Nitrolite Prediction Market' };
-      const eip712Signer = createEIP712AuthMessageSigner(
-        walletClient,
-        {
-          session_key: this.sessionAddress,
-          expires_at: BigInt(this.sessionExpiry),
-          allowances: [],
-          scope: 'console',
-        },
-        domain
-      );
+            // Create EIP-712 signer - note: NO await here as the function is not async
+            const domain = { name: 'Test app' }; // Simple domain name
+            const eip712Signer = createEIP712AuthMessageSigner(
+              walletClient,
+              authParams,
+              domain
+            );
 
-      // Create verify message
-      const verifyMsg = await createAuthVerifyMessage(eip712Signer, authResponse);
-      console.log('[YellowClient] Verify message:', verifyMsg);
+            // Create verify message with the challenge response
+            const verifyMsg = await createAuthVerifyMessage(eip712Signer, message);
+            console.log('[YellowClient] Sending verify message:', verifyMsg);
 
-      // Send verify and wait for success
-      const verifyResponse = await this.client.sendMessage(JSON.parse(verifyMsg));
-      console.log('[YellowClient] Verify response:', verifyResponse);
-      console.log('[YellowClient] Verify response (JSON):', JSON.stringify(verifyResponse, null, 2));
+            // Send verify message
+            await this.client.sendMessage(JSON.parse(verifyMsg));
 
-      // Check for success - response format: {method: 'auth_verify', params: {...}}
-      // If we get auth_verify back with no error, authentication succeeded
-      if (
-        verifyResponse?.method === 'auth_verify' ||
-        (verifyResponse?.res?.[0] === 1 && verifyResponse?.res?.[1] === 'auth_verify')
-      ) {
-        console.log('[YellowClient] ✅ Authentication successful!');
-        this.isAuthenticated = true;
-      } else if (verifyResponse?.params?.error || verifyResponse?.res?.[2]?.error) {
-        const error = verifyResponse?.params?.error || verifyResponse?.res?.[2]?.error;
-        throw new Error(`Authentication failed: ${error}`);
-      } else {
-        // If we got a response without error, assume success
-        console.log('[YellowClient] ✅ Authentication completed (assuming success)');
-        this.isAuthenticated = true;
-      }
-    } else {
-      throw new Error('No challenge received from server');
-    }
+          } catch (error) {
+            console.error('[YellowClient] Error handling auth challenge:', error);
+            reject(error);
+          }
+        }
+
+        // Check if this is an auth verify response (success)
+        if (message?.method === 'auth_verify' ||
+            message?.res?.[1] === 'auth_verify') {
+
+          console.log('[YellowClient] Auth verify response received:', JSON.stringify(message, null, 2));
+
+          // Check for errors
+          const error = message?.params?.error || message?.res?.[2]?.error;
+          if (error) {
+            console.error('[YellowClient] Authentication failed:', error);
+            reject(new Error(`Authentication failed: ${error}`));
+          } else {
+            console.log('[YellowClient] ✅ Authentication successful!');
+            this.isAuthenticated = true;
+            resolve();
+          }
+        }
+
+        // Check for error messages
+        if (message?.method === 'error' || message?.error) {
+          const error = message?.error || message?.params?.error || 'Unknown error';
+          console.error('[YellowClient] Error received:', error);
+          reject(new Error(`Authentication error: ${error}`));
+        }
+      };
+
+      // Register the listener
+      this.client.listen(handleMessage);
+
+      // Auth params for the initial request
+      const authParams = {
+        address: userAddress,
+        session_key: this.sessionAddress!,
+        application: 'Test app', // Simplified application name
+        allowances: [], // Empty allowances for testing
+        expires_at: BigInt(this.sessionExpiry!),
+        scope: 'console', // or 'test.app'
+      };
+
+      console.log('[YellowClient] Auth request params:', authParams);
+
+      // Create and send auth request message
+      const authRequestMsg = await createAuthRequestMessage(authParams);
+      console.log('[YellowClient] Sending auth request:', authRequestMsg);
+
+      // Send the auth request (this triggers the challenge response)
+      await this.client.sendMessage(JSON.parse(authRequestMsg));
+
+      // Set a timeout for the authentication process
+      setTimeout(() => {
+        if (!this.isAuthenticated) {
+          reject(new Error('Authentication timeout - no response received'));
+        }
+      }, 30000); // 30 second timeout
+    });
   }
 
   /**
