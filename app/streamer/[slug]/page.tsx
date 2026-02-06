@@ -1,10 +1,15 @@
 import { notFound } from 'next/navigation';
-import { createServerClient } from '@/lib/supabase/server';
+import { createServerClient, createServiceClient } from '@/lib/supabase/server';
 import { Navbar } from '@/components/navbar';
 import { MarketCard } from '@/components/market-card';
 import { Badge } from '@/components/ui/badge';
 import { Users, Tv } from 'lucide-react';
 import type { Database } from '@/types/database';
+import {
+  getFollowerCount,
+  getStreamByUser,
+  getUserByLogin,
+} from '@/lib/twitch/client';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -25,6 +30,80 @@ async function getStreamer(slug: string): Promise<Streamer | null> {
   }
 
   return streamer;
+}
+
+async function ensureStreamerAndMarket(slug: string): Promise<Streamer | null> {
+  let twitchUser = null;
+  try {
+    twitchUser = await getUserByLogin(slug);
+  } catch (error) {
+    console.error('Error fetching Twitch user:', error);
+  }
+
+  const [stream, followerCount] = twitchUser
+    ? await Promise.all([
+        getStreamByUser(slug),
+        getFollowerCount(twitchUser.id),
+      ])
+    : [null, 0];
+
+  const supabase = createServiceClient();
+  const displayName = twitchUser?.display_name || slug;
+  const upsertPayload = {
+    name: displayName,
+    slug,
+    description: twitchUser?.description || null,
+    profile_image_url: twitchUser?.profile_image_url || null,
+    banner_image_url: twitchUser?.offline_image_url || null,
+    platform: 'twitch',
+    is_live: Boolean(stream),
+    followers_count: followerCount,
+  };
+
+  const { data: upsertedStreamer, error: upsertError } = await supabase
+    .from('streamers')
+    .upsert(upsertPayload, { onConflict: 'slug' })
+    .select('*')
+    .single();
+
+  if (upsertError || !upsertedStreamer) {
+    console.error('Error upserting streamer:', upsertError);
+    return null;
+  }
+
+  const { data: activeMarkets, error: activeMarketsError } = await supabase
+    .from('markets')
+    .select('id')
+    .eq('streamer_id', upsertedStreamer.id)
+    .eq('status', 'active')
+    .limit(1);
+
+  if (activeMarketsError) {
+    console.error('Error checking active markets:', activeMarketsError);
+  }
+
+  if (!activeMarkets || activeMarkets.length === 0) {
+    const endDate = new Date(
+      Date.now() + 7 * 24 * 60 * 60 * 1000
+    ).toISOString();
+
+    const { error: insertError } = await supabase.from('markets').insert({
+      streamer_id: upsertedStreamer.id,
+      question: `Will ${upsertedStreamer.name} reach 10k viewers today?`,
+      description: `Auto-created market for ${upsertedStreamer.name}'s stream.`,
+      yes_price: 50,
+      no_price: 50,
+      volume: 0,
+      end_date: endDate,
+      status: 'active',
+    });
+
+    if (insertError) {
+      console.error('Error creating market:', insertError);
+    }
+  }
+
+  return upsertedStreamer;
 }
 
 async function getMarkets(streamerId: string): Promise<Market[]> {
@@ -49,7 +128,11 @@ export default async function StreamerPage({
 }: {
   params: { slug: string };
 }) {
-  const streamer = await getStreamer(params.slug);
+  let streamer = await getStreamer(params.slug);
+
+  if (!streamer) {
+    streamer = await ensureStreamerAndMarket(params.slug);
+  }
 
   if (!streamer) {
     notFound();
