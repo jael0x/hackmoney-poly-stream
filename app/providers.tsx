@@ -3,6 +3,7 @@
 import { WagmiProvider } from 'wagmi';
 import { wagmiConfig } from '@/lib/yellow/wagmi';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { YellowProvider } from '@/components/providers/yellow-provider';
 import { useState } from 'react';
 
 export function Providers({ children }: { children: React.ReactNode }) {
@@ -11,7 +12,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
       <WagmiProvider config={wagmiConfig}>
-        {children}
+        <YellowProvider>
+          {children}
+        </YellowProvider>
       </WagmiProvider>
     </QueryClientProvider>
   );

@@ -1,8 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase/client';
+import { useYellow } from '@/components/providers/yellow-provider';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -21,13 +22,16 @@ import {
   Camera,
   Wallet,
   ArrowDownToLine,
+  ArrowUpFromLine,
   Gift,
   History,
   ArrowUpRight,
   ArrowDownRight,
   Coins,
+  Network,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import { useAccount } from 'wagmi';
 import { format } from 'date-fns';
 
 interface Profile {
@@ -55,6 +59,9 @@ interface ProfileContentProps {
 
 export function ProfileContent({ user, profile, transactions }: ProfileContentProps) {
   const router = useRouter();
+  const { client, state, unifiedBalance, refreshBalance } = useYellow();
+  const { address } = useAccount();
+
   const [avatarUrl, setAvatarUrl] = useState(profile?.avatar_url || '');
   const [isEditingAvatar, setIsEditingAvatar] = useState(false);
   const [isDepositing, setIsDepositing] = useState(false);
@@ -63,8 +70,17 @@ export function ProfileContent({ user, profile, transactions }: ProfileContentPr
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // Yellow Network
+  const [isDepositingYellow, setIsDepositingYellow] = useState(false);
+  const [isWithdrawingYellow, setIsWithdrawingYellow] = useState(false);
+  const [yellowDepositAmount, setYellowDepositAmount] = useState('');
+  const [yellowWithdrawAmount, setYellowWithdrawAmount] = useState('');
+
   const balance = profile?.balance ?? 0;
   const initials = profile?.username?.slice(0, 2).toUpperCase() || user.email?.slice(0, 2).toUpperCase() || 'U';
+
+  // Get Yellow unified balance for ytest.usd
+  const ytestBalance = unifiedBalance?.balances.find(b => b.asset === 'ytest.usd')?.amount || '0';
 
   const handleAvatarUpdate = async () => {
     if (!avatarUrl.trim()) return;
@@ -159,6 +175,66 @@ export function ProfileContent({ user, profile, transactions }: ProfileContentPr
       router.refresh();
     }
     setLoading(false);
+  };
+
+  const handleYellowDeposit = async () => {
+    if (!client) {
+      setError('Yellow Network not connected');
+      return;
+    }
+
+    const amount = parseFloat(yellowDepositAmount);
+    if (isNaN(amount) || amount <= 0) {
+      setError('Please enter a valid amount');
+      return;
+    }
+
+    // Convert to smallest unit (6 decimals for USDC)
+    const amountInSmallestUnit = Math.floor(amount * 1_000_000).toString();
+
+    setLoading(true);
+    setError('');
+
+    try {
+      await client.depositToUnifiedBalance('ytest.usd', amountInSmallestUnit);
+      setYellowDepositAmount('');
+      setIsDepositingYellow(false);
+      await refreshBalance();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to deposit');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleYellowWithdraw = async () => {
+    if (!client || !address) {
+      setError('Yellow Network not connected or wallet not connected');
+      return;
+    }
+
+    const amount = parseFloat(yellowWithdrawAmount);
+    if (isNaN(amount) || amount <= 0) {
+      setError('Please enter a valid amount');
+      return;
+    }
+
+    // Convert to smallest unit (6 decimals for USDC)
+    const amountInSmallestUnit = Math.floor(amount * 1_000_000).toString();
+
+    setLoading(true);
+    setError('');
+
+    try {
+      await client.withdrawFromUnifiedBalance('ytest.usd', amountInSmallestUnit, address);
+      setYellowWithdrawAmount('');
+      setIsWithdrawingYellow(false);
+      await refreshBalance();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to withdraw');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const getTransactionIcon = (type: string) => {
@@ -425,6 +501,165 @@ export function ProfileContent({ user, profile, transactions }: ProfileContentPr
           </CardContent>
         </Card>
       </div>
+
+      {/* Yellow Network Unified Balance */}
+      <Card className="bg-gray-900 border-gray-800">
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-yellow-600/20 rounded-lg">
+                <Network className="h-5 w-5 text-yellow-400" />
+              </div>
+              <div>
+                <CardTitle className="text-white text-lg">Yellow Network</CardTitle>
+                <CardDescription className="text-gray-400">
+                  Unified Balance (Off-chain)
+                </CardDescription>
+              </div>
+            </div>
+            <Badge
+              variant="outline"
+              className={
+                state.status === 'authenticated'
+                  ? 'border-green-500 text-green-400 bg-green-500/10'
+                  : 'border-gray-700 text-gray-400'
+              }
+            >
+              {state.status === 'authenticated' ? 'Connected' : state.status}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-baseline gap-2 mb-6">
+            <span className="text-4xl font-bold text-white">
+              {(parseInt(ytestBalance) / 1_000_000).toFixed(2)}
+            </span>
+            <span className="text-gray-400 text-lg">yUSD</span>
+          </div>
+
+          {state.status === 'authenticated' ? (
+            <div className="flex gap-3">
+              <Dialog open={isDepositingYellow} onOpenChange={setIsDepositingYellow}>
+                <DialogTrigger asChild>
+                  <Button className="flex-1 bg-yellow-600 hover:bg-yellow-700">
+                    <ArrowDownToLine className="h-4 w-4 mr-2" />
+                    Deposit
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="bg-gray-900 border-gray-800">
+                  <DialogHeader>
+                    <DialogTitle className="text-white">Deposit to Yellow Network</DialogTitle>
+                    <DialogDescription className="text-gray-400">
+                      Transfer funds to your Unified Balance
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-4 pt-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="yellow-deposit-amount" className="text-gray-300">
+                        Amount (yUSD)
+                      </Label>
+                      <Input
+                        id="yellow-deposit-amount"
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        value={yellowDepositAmount}
+                        onChange={(e) => setYellowDepositAmount(e.target.value)}
+                        placeholder="Enter amount"
+                        className="bg-gray-800 border-gray-700 text-white"
+                      />
+                    </div>
+                    <div className="flex gap-2">
+                      {[10, 50, 100].map((amount) => (
+                        <Button
+                          key={amount}
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setYellowDepositAmount(amount.toString())}
+                          className="flex-1 border-gray-700 text-gray-300 hover:bg-gray-800"
+                        >
+                          {amount}
+                        </Button>
+                      ))}
+                    </div>
+                    {error && <p className="text-red-400 text-sm">{error}</p>}
+                    <Button
+                      onClick={handleYellowDeposit}
+                      disabled={loading || !yellowDepositAmount}
+                      className="w-full bg-yellow-600 hover:bg-yellow-700"
+                    >
+                      {loading ? 'Processing...' : 'Deposit to Yellow'}
+                    </Button>
+                  </div>
+                </DialogContent>
+              </Dialog>
+
+              <Dialog open={isWithdrawingYellow} onOpenChange={setIsWithdrawingYellow}>
+                <DialogTrigger asChild>
+                  <Button variant="outline" className="flex-1 border-gray-700 hover:bg-gray-800">
+                    <ArrowUpFromLine className="h-4 w-4 mr-2" />
+                    Withdraw
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="bg-gray-900 border-gray-800">
+                  <DialogHeader>
+                    <DialogTitle className="text-white">Withdraw from Yellow Network</DialogTitle>
+                    <DialogDescription className="text-gray-400">
+                      Withdraw funds from Unified Balance to your wallet
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-4 pt-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="yellow-withdraw-amount" className="text-gray-300">
+                        Amount (yUSD)
+                      </Label>
+                      <Input
+                        id="yellow-withdraw-amount"
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        value={yellowWithdrawAmount}
+                        onChange={(e) => setYellowWithdrawAmount(e.target.value)}
+                        placeholder="Enter amount"
+                        className="bg-gray-800 border-gray-700 text-white"
+                      />
+                      <p className="text-xs text-gray-500">
+                        Available: {(parseInt(ytestBalance) / 1_000_000).toFixed(2)} yUSD
+                      </p>
+                    </div>
+                    <div className="flex gap-2">
+                      {[10, 50, 100].map((amount) => (
+                        <Button
+                          key={amount}
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setYellowWithdrawAmount(amount.toString())}
+                          className="flex-1 border-gray-700 text-gray-300 hover:bg-gray-800"
+                          disabled={parseInt(ytestBalance) < amount * 1_000_000}
+                        >
+                          {amount}
+                        </Button>
+                      ))}
+                    </div>
+                    {error && <p className="text-red-400 text-sm">{error}</p>}
+                    <Button
+                      onClick={handleYellowWithdraw}
+                      disabled={loading || !yellowWithdrawAmount || !address}
+                      className="w-full bg-gray-700 hover:bg-gray-600"
+                    >
+                      {loading ? 'Processing...' : 'Withdraw to Wallet'}
+                    </Button>
+                  </div>
+                </DialogContent>
+              </Dialog>
+            </div>
+          ) : (
+            <p className="text-sm text-gray-500 text-center py-2">
+              Connect wallet and authenticate with Yellow Network to manage your Unified Balance
+            </p>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

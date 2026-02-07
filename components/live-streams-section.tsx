@@ -5,6 +5,7 @@ import type { TwitchStream } from '@/types/twitch';
 import type { Database } from '@/types/database';
 import { LiveStreamCard } from '@/components/live-stream-card';
 import { StreamerCard } from '@/components/streamer-card';
+import { AutoRefreshStreams } from '@/components/auto-refresh-streams';
 import { Button } from '@/components/ui/button';
 
 type Streamer = Database['public']['Tables']['streamers']['Row'];
@@ -51,14 +52,17 @@ export function LiveStreamsSection({
           </p>
         </div>
 
-        <Button
-          type="button"
-          variant="outline"
-          className="border-gray-800 text-gray-300 hover:bg-gray-800 hover:text-white"
-          onClick={() => setShowOffline((value) => !value)}
-        >
-          {showOffline ? 'Hide Offline' : 'Show Offline'}
-        </Button>
+        <div className="flex items-center gap-3">
+          <AutoRefreshStreams refreshInterval={60000} />
+          <Button
+            type="button"
+            variant="outline"
+            className="border-gray-800 text-gray-300 hover:bg-gray-800 hover:text-white"
+            onClick={() => setShowOffline((value) => !value)}
+          >
+            {showOffline ? 'Hide Offline' : 'Show Offline'}
+          </Button>
+        </div>
       </div>
 
       {!hasLiveStreams ? (
