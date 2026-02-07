@@ -178,6 +178,7 @@ export interface YellowClientState {
   address?: string;
   sessionKey?: string;
   unifiedBalance?: UnifiedBalance;
+  walletBalances?: any[];
   error?: string;
 }
 

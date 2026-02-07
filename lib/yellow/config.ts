@@ -18,7 +18,7 @@ export const YELLOW_CONFIG = {
 
   // Default allowances for session keys
   DEFAULT_ALLOWANCES: [
-    { asset: 'ytest.usd', amount: '1000000' }, // 1M test USDC (6 decimals)
+    { asset: 'ytest.usd', amount: '10000000' }, // 10M test USDC (6 decimals) - increased for larger deposits
   ],
 
   // App Session configuration for prediction markets

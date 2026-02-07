@@ -20,9 +20,7 @@ import {
   createCloseAppSessionMessage,
   createGetAppSessionsMessage,
   createGetAppDefinitionMessage,
-  createTransferMessage,
   RPCAppStateIntent,
-  RPCProtocolVersion,
 } from '@erc7824/nitrolite';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import type { Address, Hex } from 'viem';
@@ -31,14 +29,14 @@ import type {
   YellowClientState,
   UnifiedBalance,
   Listener,
-  SessionKeyConfig,
   ActiveSessionKey,
   AppSessionRequest,
-  AppSessionResponse,
   Allocation,
 } from './types';
 import { ConnectionStatus } from './types';
 import { YELLOW_CONFIG } from './config';
+
+export { ConnectionStatus } from './types';
 
 export class YellowClient {
   private client: Client;
@@ -51,7 +49,8 @@ export class YellowClient {
   private sessionPrivateKey?: `0x${string}`;
   private sessionSigner?: any; // ECDSA signer for session key
   private sessionAddress?: `0x${string}`;
-  private jwtToken?: string;
+  private authResolve?: (value: void) => void;
+  private authReject?: (reason?: any) => void;
 
   constructor(config: YellowClientConfig = {}) {
     const wsUrl = config.wsUrl || YELLOW_CONFIG.CLEARNODE_WS_URL;
@@ -122,52 +121,65 @@ export class YellowClient {
     walletAddress: `0x${string}`,
     walletSigner: any // Should be from wagmi/viem
   ): Promise<void> {
-    try {
-      if (!this.isConnected()) {
-        throw new Error('Not connected to Yellow Network');
+    return new Promise(async (resolve, reject) => {
+      try {
+        if (!this.isConnected()) {
+          throw new Error('Not connected to Yellow Network');
+        }
+
+        console.log('🔐 Starting authentication...');
+
+        // Store promise handlers
+        this.authResolve = resolve;
+        this.authReject = reject;
+
+        // Store main wallet info
+        this.mainAddress = walletAddress;
+        this.mainWalletSigner = walletSigner;
+
+        // Generate session key
+        this.sessionPrivateKey = generatePrivateKey();
+        this.sessionSigner = createECDSAMessageSigner(this.sessionPrivateKey);
+        const sessionAccount = privateKeyToAccount(this.sessionPrivateKey);
+        this.sessionAddress = sessionAccount.address;
+
+        console.log('📝 Session key generated:', this.sessionAddress);
+
+        // Create session key configuration
+        const allowances: Array<{ asset: string; amount: string }> = [...YELLOW_CONFIG.DEFAULT_ALLOWANCES];
+        const expiresAt = Math.floor(Date.now() / 1000) + YELLOW_CONFIG.SESSION_KEY_EXPIRY;
+
+        // Step 1: Send auth_request
+        const authRequestMsg = await createAuthRequestMessage({
+          address: this.mainAddress,
+          session_key: this.sessionAddress,
+          application: YELLOW_CONFIG.APPLICATION_NAME,
+          allowances,
+          scope: YELLOW_CONFIG.SESSION_KEY_SCOPE,
+          expires_at: BigInt(expiresAt),
+        });
+
+        // Parse if it's a string (like in working implementation)
+        const msgToSend = typeof authRequestMsg === 'string'
+          ? JSON.parse(authRequestMsg)
+          : authRequestMsg;
+
+        await this.client.sendMessage(msgToSend);
+        console.log('📤 Sent auth_request');
+
+        // Step 2: Wait for auth_challenge
+        // This is handled in handleMessage() which will call handleAuthChallenge()
+      } catch (error) {
+        console.error('Authentication failed:', error);
+        this.updateState({
+          status: ConnectionStatus.ERROR,
+          error: error instanceof Error ? error.message : 'Authentication failed',
+        });
+        this.authReject = undefined;
+        this.authResolve = undefined;
+        reject(error);
       }
-
-      console.log('🔐 Starting authentication...');
-
-      // Store main wallet info
-      this.mainAddress = walletAddress;
-      this.mainWalletSigner = walletSigner;
-
-      // Generate session key
-      this.sessionPrivateKey = generatePrivateKey();
-      this.sessionSigner = createECDSAMessageSigner(this.sessionPrivateKey);
-      const sessionAccount = privateKeyToAccount(this.sessionPrivateKey);
-      this.sessionAddress = sessionAccount.address;
-
-      console.log('📝 Session key generated:', this.sessionAddress);
-
-      // Create session key configuration
-      const allowances: Array<{ asset: string; amount: string }> = [...YELLOW_CONFIG.DEFAULT_ALLOWANCES];
-      const expiresAt = Math.floor(Date.now() / 1000) + YELLOW_CONFIG.SESSION_KEY_EXPIRY;
-
-      // Step 1: Send auth_request
-      const authRequestMsg = await createAuthRequestMessage({
-        address: this.mainAddress,
-        session_key: this.sessionAddress,
-        application: YELLOW_CONFIG.APPLICATION_NAME,
-        allowances,
-        scope: YELLOW_CONFIG.SESSION_KEY_SCOPE,
-        expires_at: BigInt(expiresAt),
-      });
-
-      await this.client.sendMessage(authRequestMsg);
-      console.log('📤 Sent auth_request');
-
-      // Step 2: Wait for auth_challenge
-      // This is handled in handleMessage() which will call handleAuthChallenge()
-    } catch (error) {
-      console.error('Authentication failed:', error);
-      this.updateState({
-        status: ConnectionStatus.ERROR,
-        error: error instanceof Error ? error.message : 'Authentication failed',
-      });
-      throw error;
-    }
+    });
   }
 
   private async handleAuthChallenge(message: RPCResponse): Promise<void> {
@@ -177,9 +189,7 @@ export class YellowClient {
       }
 
       console.log('🔑 Received auth_challenge');
-
-      // Extract challenge from response
-      const challenge = (message.params as any).challenge_message;
+      console.log('Challenge message structure:', JSON.stringify(message, null, 2));
 
       // Sign challenge with main wallet using EIP-712
       const expiresAt = Math.floor(Date.now() / 1000) + YELLOW_CONFIG.SESSION_KEY_EXPIRY;
@@ -198,13 +208,28 @@ export class YellowClient {
         { name: YELLOW_CONFIG.APPLICATION_NAME }
       );
 
-      // Create and send auth_verify
-      const authVerifyMsg = await createAuthVerifyMessage(eip712Signer, challenge);
-      await this.client.sendMessage(authVerifyMsg);
+      // Pass the entire message object to createAuthVerifyMessage
+      // Need to cast as any since the nitrolite types are restrictive
+      const authVerifyMsg = await createAuthVerifyMessage(eip712Signer, message as any);
+
+      // Parse if it's a string (like in working implementation)
+      const msgToSend = typeof authVerifyMsg === 'string'
+        ? JSON.parse(authVerifyMsg)
+        : authVerifyMsg;
+
+      await this.client.sendMessage(msgToSend);
 
       console.log('📤 Sent auth_verify');
     } catch (error) {
       console.error('Failed to handle auth challenge:', error);
+
+      // Reject the authentication promise
+      if (this.authReject) {
+        this.authReject(error);
+        this.authResolve = undefined;
+        this.authReject = undefined;
+      }
+
       throw error;
     }
   }
@@ -213,17 +238,18 @@ export class YellowClient {
     try {
       console.log('✅ Authentication successful!');
 
-      // Extract JWT token from response (if provided)
-      const params = message.params as any;
-      if (params?.token) {
-        this.jwtToken = params.token;
-      }
-
       this.updateState({
         status: ConnectionStatus.AUTHENTICATED,
         address: this.mainAddress,
         sessionKey: this.sessionAddress,
       });
+
+      // Resolve the authentication promise
+      if (this.authResolve) {
+        this.authResolve();
+        this.authResolve = undefined;
+        this.authReject = undefined;
+      }
 
       // Fetch initial unified balance
       await this.fetchUnifiedBalance();
@@ -243,14 +269,20 @@ export class YellowClient {
         throw new Error('Not authenticated');
       }
 
+      let accountToQuery = this.mainAddress;
+
       const balanceMsg = await createGetLedgerBalancesMessage(
         this.sessionSigner,
-        this.mainAddress
+        accountToQuery
       );
 
       const response = await this.client.sendMessage(balanceMsg);
+      console.log('📊 Ledger balance response for', accountToQuery, ':', response);
 
-      const balances = (response as any).res?.[2] || [];
+      // The response comes back with balances in params.ledgerBalances
+      const balances = (response as any).params?.ledgerBalances || [];
+      console.log('📊 Extracted ledger balances:', balances);
+
       const unifiedBalance: UnifiedBalance = {
         balances,
         updated_at: new Date().toISOString(),
@@ -265,7 +297,25 @@ export class YellowClient {
   }
 
   getUnifiedBalance(): UnifiedBalance | undefined {
+    // Note: Currently unified balance and wallet balance are the same
+    // The ledger balance IS the wallet balance in Yellow Network
     return this.state.unifiedBalance;
+  }
+
+  getWalletBalances(): any[] {
+    return this.state.walletBalances || [];
+  }
+
+  /**
+   * Get the actual ledger balance (which is the same as wallet balance)
+   */
+  getLedgerBalance(): any[] {
+    // In Yellow Network, the ledger balance IS your wallet balance
+    // There isn't a separate "unified balance" - funds are either:
+    // 1. In your ledger (wallet)
+    // 2. Locked in channels/app sessions
+    // 3. Transferred to broker for specific operations
+    return this.state.unifiedBalance?.balances || this.state.walletBalances || [];
   }
 
   // ============================================================================
@@ -305,8 +355,15 @@ export class YellowClient {
           break;
 
         case RPCMethod.BalanceUpdate:
-          console.log('💰 Balance update:', message.params);
-          await this.fetchUnifiedBalance();
+          console.log('💰 Wallet balance update:', message.params);
+          // Store wallet balance separately
+          const walletBalances = (message.params as any)?.balanceUpdates || [];
+          this.updateState({ walletBalances });
+
+          // Also fetch unified balance if authenticated
+          if (this.isAuthenticated()) {
+            await this.fetchUnifiedBalance();
+          }
           this.emit('balance_update', message);
           break;
 
@@ -376,71 +433,34 @@ export class YellowClient {
   }
 
   // ============================================================================
-  // Deposit & Withdrawal
+  // Balance Management
   // ============================================================================
 
   /**
-   * Deposit funds from wallet to Unified Balance (via Transfer)
+   * Check if user has enough balance for an operation
    */
-  async depositToUnifiedBalance(asset: string, amount: string): Promise<void> {
+  async hasBalance(asset: string, amount: string): Promise<boolean> {
     try {
-      if (!this.isAuthenticated() || !this.sessionSigner) {
-        throw new Error('Not authenticated');
-      }
+      const balances = this.getLedgerBalance();
+      const assetBalance = balances.find((b: any) => b.asset === asset);
+      if (!assetBalance) return false;
 
-      console.log(`💰 Depositing ${amount} ${asset} to Unified Balance...`);
+      const currentBalance = BigInt(assetBalance.amount);
+      const requiredAmount = BigInt(amount);
 
-      const transferMsg = await createTransferMessage(this.sessionSigner, {
-        allocations: [{ asset, amount }],
-      });
-
-      await this.client.sendMessage(transferMsg);
-      console.log('✅ Deposit initiated');
-
-      // Refresh balance after deposit
-      await this.fetchUnifiedBalance();
-    } catch (error) {
-      console.error('Failed to deposit:', error);
-      throw error;
+      return currentBalance >= requiredAmount;
+    } catch {
+      return false;
     }
   }
 
-  /**
-   * Withdraw funds from Unified Balance to wallet
-   */
-  async withdrawFromUnifiedBalance(
-    asset: string,
-    amount: string,
-    destination: Address
-  ): Promise<void> {
-    try {
-      if (!this.isAuthenticated() || !this.sessionSigner) {
-        throw new Error('Not authenticated');
-      }
-
-      console.log(`💸 Withdrawing ${amount} ${asset} to ${destination}...`);
-
-      const transferMsg = await createTransferMessage(this.sessionSigner, {
-        destination,
-        allocations: [{ asset, amount }],
-      });
-
-      await this.client.sendMessage(transferMsg);
-      console.log('✅ Withdrawal initiated');
-
-      // Refresh balance after withdrawal
-      await this.fetchUnifiedBalance();
-    } catch (error) {
-      console.error('Failed to withdraw:', error);
-      throw error;
-    }
-  }
-
+  
   // ============================================================================
   // App Sessions (Prediction Markets)
   // ============================================================================
-
+  
   /**
+   * Use App Sessions to lock funds for betting
    * Create an App Session for a prediction market
    * Returns the app_session_id
    */

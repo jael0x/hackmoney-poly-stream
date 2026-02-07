@@ -12,6 +12,7 @@ import { sepolia } from 'wagmi/chains';
 // import { useStore } from '../../store';
 import { formatEther, Address } from 'viem';
 import { Button } from '@/components/ui/button';
+import Link from 'next/link';
 
 /**
  * WalletConnect component
@@ -118,7 +119,7 @@ export default function WalletConnect() {
       <div className="flex items-center space-x-4">
 
         {/* Balance Display */}
-        <div className="text-sm text-gray-300">
+        {/* <div className="text-sm text-gray-300">
           <div className="flex items-center space-x-2">
             <span>ETH:</span>
             <span className="font-mono">{formatBalance(ethBalance?.value)}</span>
@@ -127,14 +128,16 @@ export default function WalletConnect() {
             <span>{tokenBalance?.symbol || 'USDC'}:</span>
             <span className="font-mono">{formatBalance(tokenBalance?.value, tokenBalance?.decimals || 6)}</span>
           </div>
-        </div>
+        </div> */}
 
         {/* Disconnect Button */}
         <Button
-          onClick={handleDisconnect}
-          className="px-4 py-2 bg-gray-700 hover:bg-red-800 text-white transition-colors"
+          className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white transition-colors"
+          asChild
         >
-          {formatAddress(address)}
+          <Link href="/profile">
+            {formatAddress(address)}
+          </Link>
         </Button>
       </div>
     );
