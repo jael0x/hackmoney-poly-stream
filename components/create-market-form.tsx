@@ -40,6 +40,10 @@ const formSchema = z.object({
   streamerId: z.string().min(1, 'Please select a streamer'),
   question: z.string().min(10, 'Question must be at least 10 characters'),
   description: z.string().optional(),
+  twitchMetric: z.enum(['viewer_count', 'followers_count'], {
+    required_error: 'Please select a Twitch metric',
+  }),
+  targetValue: z.coerce.number().min(1, 'Target value must be at least 1'),
   endDate: z.date({
     required_error: 'Please select a resolution date',
   }),
@@ -65,6 +69,8 @@ export function CreateMarketForm({ streamers }: CreateMarketFormProps) {
       streamerId: '',
       question: '',
       description: '',
+      twitchMetric: 'viewer_count',
+      targetValue: 10000,
     },
   });
 
@@ -72,22 +78,27 @@ export function CreateMarketForm({ streamers }: CreateMarketFormProps) {
     setIsSubmitting(true);
 
     try {
-      const supabase = createClient<Database>(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-      );
+      // Call API to create market with Yellow Network integration
+      const response = await fetch('/api/markets/create', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          streamerId: values.streamerId,
+          question: values.question,
+          description: values.description || null,
+          twitchMetric: values.twitchMetric,
+          targetValue: values.targetValue,
+          endDate: values.endDate.toISOString(),
+        }),
+      });
 
-      const { error } = await supabase.from('markets').insert({
-        streamer_id: values.streamerId,
-        question: values.question,
-        description: values.description || null,
-        end_date: values.endDate.toISOString(),
-        status: 'active' as const,
-      } as any);
+      const data = await response.json();
 
-      if (error) {
-        console.error('Error creating market:', error);
-        alert('Failed to create market. Please try again.');
+      if (!response.ok || !data.success) {
+        console.error('Error creating market:', data.error);
+        alert(data.error || 'Failed to create market. Please try again.');
         return;
       }
 
@@ -176,6 +187,63 @@ export function CreateMarketForm({ streamers }: CreateMarketFormProps) {
               </FormControl>
               <FormDescription className="text-gray-500">
                 Add more context or rules for this prediction
+              </FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
+          name="twitchMetric"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel className="text-white">Twitch Metric</FormLabel>
+              <Select onValueChange={field.onChange} defaultValue={field.value}>
+                <FormControl>
+                  <SelectTrigger className="bg-gray-900 border-gray-800 text-white">
+                    <SelectValue placeholder="Select a metric to track" />
+                  </SelectTrigger>
+                </FormControl>
+                <SelectContent className="bg-gray-900 border-gray-800">
+                  <SelectItem
+                    value="viewer_count"
+                    className="text-white focus:bg-gray-800 focus:text-white"
+                  >
+                    Viewer Count (live viewers)
+                  </SelectItem>
+                  <SelectItem
+                    value="followers_count"
+                    className="text-white focus:bg-gray-800 focus:text-white"
+                  >
+                    Follower Count (total followers)
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <FormDescription className="text-gray-500">
+                Which Twitch metric will determine the outcome
+              </FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
+          name="targetValue"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel className="text-white">Target Value</FormLabel>
+              <FormControl>
+                <Input
+                  type="number"
+                  placeholder="10000"
+                  className="bg-gray-900 border-gray-800 text-white placeholder:text-gray-600"
+                  {...field}
+                />
+              </FormControl>
+              <FormDescription className="text-gray-500">
+                YES wins if metric reaches this value, NO wins otherwise
               </FormDescription>
               <FormMessage />
             </FormItem>
