@@ -195,7 +195,7 @@ export class YellowClient {
       const expiresAt = Math.floor(Date.now() / 1000) + YELLOW_CONFIG.SESSION_KEY_EXPIRY;
       const authParamsForSigner = {
         scope: YELLOW_CONFIG.SESSION_KEY_SCOPE,
-        application: YELLOW_CONFIG.APPLICATION_NAME,
+        application: this.mainAddress!, // IMPORTANT: Must be wallet address, not app name
         participant: this.sessionAddress!,
         session_key: this.sessionAddress!,
         expires_at: BigInt(expiresAt),
@@ -220,6 +220,25 @@ export class YellowClient {
       await this.client.sendMessage(msgToSend);
 
       console.log('📤 Sent auth_verify');
+
+      // Authentication is complete after sending auth_verify
+      // The server doesn't send a separate auth_verify response
+      console.log('🔐 Authentication flow complete');
+      this.updateState({
+        status: ConnectionStatus.AUTHENTICATED,
+        address: this.mainAddress,
+        sessionKey: this.sessionAddress,
+      });
+
+      // Resolve the authentication promise
+      if (this.authResolve) {
+        this.authResolve();
+        this.authResolve = undefined;
+        this.authReject = undefined;
+      }
+
+      // Fetch initial unified balance
+      await this.fetchUnifiedBalance();
     } catch (error) {
       console.error('Failed to handle auth challenge:', error);
 
@@ -234,9 +253,8 @@ export class YellowClient {
     }
   }
 
-  private async handleAuthVerify(message: RPCResponse): Promise<void> {
+  private async handleAuthVerify(): Promise<void> {
     try {
-      console.log('✅ Authentication successful!');
 
       this.updateState({
         status: ConnectionStatus.AUTHENTICATED,
@@ -345,13 +363,18 @@ export class YellowClient {
 
   private async handleMessage(message: RPCResponse): Promise<void> {
     try {
+      // Debug logging for all messages
+      console.log('📨 Received message:', message.method || 'no method', message);
+
       switch (message.method) {
         case RPCMethod.AuthChallenge:
           await this.handleAuthChallenge(message);
           break;
 
         case RPCMethod.AuthVerify:
-          await this.handleAuthVerify(message);
+          console.log('✅ Authentication successful!');
+          console.log('🔐 Auth verify response:', JSON.stringify(message, null, 2));
+          await this.handleAuthVerify();
           break;
 
         case RPCMethod.BalanceUpdate:
@@ -370,11 +393,25 @@ export class YellowClient {
         case RPCMethod.Error:
           console.error('❌ Yellow Network error:', message.params);
           this.emit('error', message);
+
+          // If error during auth, reject the promise
+          if (this.authReject && message.params?.error?.includes('authentication')) {
+            this.authReject(new Error(message.params.error));
+            this.authReject = undefined;
+            this.authResolve = undefined;
+          }
           break;
 
         default:
-          // Emit to any registered listeners
-          this.emit(message.method, message);
+          // Check if this might be an auth verify response with different format
+          if (message && this.authResolve) {
+            console.log('✅ Authentication successful!');
+            console.log('🔐 Auth verify response:', JSON.stringify(message, null, 2));
+            await this.handleAuthVerify();
+          } else {
+            // Emit to any registered listeners
+            this.emit(message.method, message);
+          }
           break;
       }
     } catch (error) {
@@ -471,6 +508,9 @@ export class YellowClient {
       }
 
       console.log('🎲 Creating App Session for market...');
+      console.log('Session signer exists:', !!this.sessionSigner);
+      console.log('Main address:', this.mainAddress);
+      console.log('Session address:', this.sessionAddress);
 
       // Create request with application field
       const rpcRequest = {
@@ -482,16 +522,31 @@ export class YellowClient {
       };
 
       const message = await createAppSessionMessage(this.sessionSigner, rpcRequest as any);
-      const response = await this.client.sendMessage(message);
 
-      // Parse response to extract app_session_id
-      const result = (response as any).res?.[2]?.[0];
-      if (!result?.app_session_id) {
-        throw new Error('Failed to create app session - no session ID returned');
+      // Parse if it's a string (like in the SDK examples)
+      const msgToSend = typeof message === 'string' ? JSON.parse(message) : message;
+
+      console.log('📤 Sending app session message...', msgToSend);
+      const response = await this.client.sendMessage(msgToSend);
+      console.log('📥 App session response:', response);
+
+      // The response format from the SDK examples shows it comes back directly in params
+      if ((response as any).params?.appSessionId) {
+        const appSessionId = (response as any).params.appSessionId;
+        console.log('✅ App Session created:', appSessionId);
+        return appSessionId;
       }
 
-      console.log('✅ App Session created:', result.app_session_id);
-      return result.app_session_id;
+      // Try alternative response format
+      const result = (response as any).res?.[2]?.[0];
+      if (result?.app_session_id) {
+        console.log('✅ App Session created:', result.app_session_id);
+        return result.app_session_id;
+      }
+
+      // If neither format works, log the full response for debugging
+      console.error('Unexpected response format:', JSON.stringify(response, null, 2));
+      throw new Error('Failed to create app session - no session ID returned');
     } catch (error) {
       console.error('Failed to create app session:', error);
       throw error;
@@ -532,7 +587,9 @@ export class YellowClient {
         allocations: newAllocations as any, // Type cast since our Allocation type uses string for participant
       });
 
-      await this.client.sendMessage(message);
+      // Parse if it's a string
+      const msgToSend = typeof message === 'string' ? JSON.parse(message) : message;
+      await this.client.sendMessage(msgToSend);
       console.log('✅ Bet submitted successfully');
     } catch (error) {
       console.error('Failed to submit bet:', error);
@@ -553,9 +610,13 @@ export class YellowClient {
         this.sessionSigner,
         appSessionId
       );
-      const response = await this.client.sendMessage(message);
 
-      return (response as any).res?.[2];
+      // Parse if it's a string
+      const msgToSend = typeof message === 'string' ? JSON.parse(message) : message;
+      const response = await this.client.sendMessage(msgToSend);
+
+      console.log('📄 App definition response:', response);
+      return (response as any).res?.[2] || (response as any).params || response;
     } catch (error) {
       console.error('Failed to get app definition:', error);
       throw error;
@@ -579,7 +640,19 @@ export class YellowClient {
         participant,
         status as any // Type cast for channel status
       );
+
+      console.log('🔍 Fetching app sessions for participant:', participant, 'status:', status);
       const response = await this.client.sendMessage(message);
+      console.log('📊 App sessions response:', response);
+
+      // Try different response formats
+      if ((response as any).params?.appSessions) {
+        return (response as any).params.appSessions;
+      }
+
+      if ((response as any).result) {
+        return (response as any).result;
+      }
 
       return (response as any).res?.[2] || [];
     } catch (error) {

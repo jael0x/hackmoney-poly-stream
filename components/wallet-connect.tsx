@@ -13,6 +13,7 @@ import { sepolia } from 'wagmi/chains';
 import { formatEther, Address } from 'viem';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
+import { formatAddress } from '@/lib/utils';
 
 /**
  * WalletConnect component
@@ -24,6 +25,13 @@ export default function WalletConnect() {
   const { disconnect } = useDisconnect();
   const { switchChain } = useSwitchChain();
   // const { setWallet } = useStore();
+
+  // Prevent hydration mismatch by ensuring consistent initial render
+  const [mounted, setMounted] = React.useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Get ETH balance
   const { data: ethBalance } = useBalance({
@@ -95,13 +103,6 @@ export default function WalletConnect() {
   };
 
   /**
-   * Format address for display
-   */
-  const formatAddress = (addr: string) => {
-    return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
-  };
-
-  /**
    * Format balance for display
    */
   const formatBalance = (value?: bigint, decimals = 18) => {
@@ -114,6 +115,23 @@ export default function WalletConnect() {
     }
   };
 
+  // Always render with consistent structure to avoid hydration mismatches
+  // Check mounted state to ensure client-side state is used
+  if (!mounted) {
+    // During SSR and initial client render, show connect button
+    return (
+      <div className="flex items-center space-x-4">
+        <Button
+          disabled
+          className="px-6 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 text-white transition-colors"
+        >
+          Connect Wallet
+        </Button>
+      </div>
+    );
+  }
+
+  // After mounting, render based on actual connection state
   if (isConnected && address) {
     return (
       <div className="flex items-center space-x-4">
@@ -144,7 +162,7 @@ export default function WalletConnect() {
   }
 
   return (
-    <div>
+    <div className="flex items-center space-x-4">
       {/* Connect Button */}
       <Button
         onClick={handleConnect}

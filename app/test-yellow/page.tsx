@@ -2,11 +2,12 @@
 
 import { Navbar } from '@/components/navbar';
 import { wagmiConfig } from '@/lib/yellow/wagmi';
-import { YellowClient, ConnectionStatus } from '@/lib/yellow/client';
+import { YellowClient } from '@/lib/yellow/client';
 import { useState, useEffect, useRef } from 'react';
 import { useAccount } from 'wagmi';
 import { getWalletClient } from '@wagmi/core';
 import type { Hex, Address } from 'viem';
+import { formatAddress } from '@/lib/utils';
 
 declare global {
   interface Window {
@@ -22,8 +23,10 @@ export default function TestYellow() {
   const [appSessions, setAppSessions] = useState<any[]>([]);
   const [testMarketId, setTestMarketId] = useState<string>('');
   const yellowClientRef = useRef<YellowClient | null>(null);
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     // Cleanup on unmount
     return () => {
       if (yellowClientRef.current) {
@@ -37,7 +40,7 @@ export default function TestYellow() {
     setLogs(prev => [...prev, `${new Date().toLocaleTimeString()}: ${msg}`]);
   };
 
-  const testConnection = async () => {
+  const authenticate = async () => {
     if (!isConnected || !address) {
       addLog('ERROR: Wallet not connected');
       return;
@@ -165,7 +168,9 @@ export default function TestYellow() {
 
       // Get current allocations
       const sessions = await yellowClientRef.current.getAppSessions(address as Address);
-      const session = sessions.find((s: any) => s.app_session_id === testMarketId);
+      const session = sessions.find((s: any) =>
+        s.app_session_id === testMarketId || s.appSessionId === testMarketId
+      );
       const currentAllocations = session?.allocations || [];
 
       // Submit bet
@@ -210,10 +215,27 @@ export default function TestYellow() {
 
       // Log session details
       sessions.forEach((session: any) => {
-        console.log('Session:', session);
+        console.log('Full Session Object:', {
+          appSessionId: session.appSessionId || session.app_session_id,
+          application: session.application,
+          protocol: session.protocol,
+          version: session.version,
+          status: session.status,
+          participants: session.participants,
+          weights: session.weights,
+          quorum: session.quorum,
+          challenge: session.challenge,
+          nonce: session.nonce,
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt,
+          allocations: session.allocations,
+          sessionData: session.sessionData
+        });
+
         const totalLocked = session.allocations?.reduce((sum: bigint, alloc: any) =>
           sum + BigInt(alloc.amount || 0), 0n) || 0n;
-        addLog(`  - Session ${session.app_session_id?.slice(0, 10)}... | Locked: ${totalLocked.toString()} ytest.usd`);
+        const sessionId = session.appSessionId || session.app_session_id;
+        addLog(`  - Session ${sessionId?.slice(0, 10)}... | Status: ${session.status} | Locked: ${totalLocked.toString()} ytest.usd`);
       });
     } catch (error) {
       addLog(`❌ Error fetching sessions: ${error instanceof Error ? error.message : String(error)}`);
@@ -231,7 +253,9 @@ export default function TestYellow() {
 
       // Get current session state
       const sessions = await yellowClientRef.current.getAppSessions(address as Address);
-      const session = sessions.find((s: any) => s.app_session_id === testMarketId);
+      const session = sessions.find((s: any) =>
+        s.app_session_id === testMarketId || s.appSessionId === testMarketId
+      );
 
       if (!session) {
         throw new Error('Session not found');
@@ -283,111 +307,34 @@ export default function TestYellow() {
             <h2 className="text-2xl font-semibold mb-4">Connection Test</h2>
 
             <div className="mb-6 space-y-2">
-              <p>Wallet: {isConnected ? `${address?.slice(0, 10)}...` : 'Not connected'}</p>
+              <p>Wallet: {mounted && isConnected ? formatAddress(address) : 'Not connected'}</p>
               <p>Status: <span className={status === 'SUCCESS! 🎉' ? 'text-green-500' : status === 'FAILED' ? 'text-red-500' : 'text-yellow-500'}>{status}</span></p>
-              <p>Ledger Balance: {ledgerBalance} ytest.usd</p>
+              <p>Balance: {ledgerBalance} ytest.usd</p>
             </div>
 
-            <div className="space-x-4 mb-6">
+            <div className="space-x-4 mb-3 flex flex-row">
               <button
-                onClick={testConnection}
-                disabled={!isConnected}
+                onClick={authenticate}
+                disabled={!mounted || !isConnected}
                 className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded"
               >
-                Test Connection
+                Authenticate
+              </button>
+              <button
+                onClick={createTestMarket}
+                disabled={!mounted || !yellowClientRef.current || !!testMarketId}
+                className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 rounded mr-4"
+              >
+                Create Market
               </button>
               <button
                 onClick={fetchAppSessions}
-                disabled={!yellowClientRef.current}
+                disabled={!mounted || !yellowClientRef.current}
                 className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 rounded"
               >
                 Refresh Sessions
               </button>
             </div>
-          </div>
-
-          <div className="mb-8 bg-gray-800 rounded-lg p-6">
-            <h2 className="text-2xl font-semibold mb-4">Market Operations</h2>
-
-            <div className="space-y-4">
-              <div>
-                <button
-                  onClick={createTestMarket}
-                  disabled={!yellowClientRef.current || !!testMarketId}
-                  className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 rounded mr-4"
-                >
-                  Create Test Market
-                </button>
-                {testMarketId && (
-                  <span className="text-sm text-gray-400">
-                    Active Market: {testMarketId.slice(0, 10)}...
-                  </span>
-                )}
-              </div>
-
-              <div className="flex space-x-4">
-                <button
-                  onClick={() => placeBet('yes')}
-                  disabled={!yellowClientRef.current || !testMarketId}
-                  className="px-4 py-2 bg-green-500 hover:bg-green-600 disabled:bg-gray-600 rounded"
-                >
-                  Bet YES (1 ytest.usd)
-                </button>
-                <button
-                  onClick={() => placeBet('no')}
-                  disabled={!yellowClientRef.current || !testMarketId}
-                  className="px-4 py-2 bg-red-500 hover:bg-red-600 disabled:bg-gray-600 rounded"
-                >
-                  Bet NO (1 ytest.usd)
-                </button>
-              </div>
-
-              <div>
-                <button
-                  onClick={closeTestMarket}
-                  disabled={!yellowClientRef.current || !testMarketId}
-                  className="px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 rounded"
-                >
-                  Close Market & Return Funds
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="mb-8 bg-gray-800 rounded-lg p-6">
-            <h2 className="text-2xl font-semibold mb-4">Active App Sessions</h2>
-
-            {appSessions.length === 0 ? (
-              <p className="text-gray-400">No active sessions</p>
-            ) : (
-              <div className="space-y-2">
-                {appSessions.map((session: any, idx: number) => {
-                  const totalLocked = session.allocations?.reduce((sum: bigint, alloc: any) =>
-                    sum + BigInt(alloc.amount || 0), 0n) || 0n;
-
-                  return (
-                    <div key={idx} className="bg-gray-700 p-3 rounded">
-                      <p className="text-sm">
-                        Session: {session.app_session_id?.slice(0, 20)}...
-                      </p>
-                      <p className="text-sm text-gray-400">
-                        Locked: {totalLocked.toString()} ytest.usd
-                      </p>
-                      {session.allocations?.map((alloc: any, allocIdx: number) => (
-                        <p key={allocIdx} className="text-xs text-gray-500 ml-4">
-                          {alloc.participant?.slice(0, 10)}...: {alloc.amount} {alloc.asset}
-                        </p>
-                      ))}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="container">
-          <div className="bg-gray-800 rounded-lg p-6">
             <h2 className="text-2xl font-semibold mb-4">Logs</h2>
 
             <div className="bg-black p-4 rounded h-64 overflow-y-auto font-mono text-sm">
@@ -412,6 +359,210 @@ export default function TestYellow() {
             <p className="text-sm text-gray-400 mt-2">
               Note: Your ledger balance = wallet balance. Funds are locked in app sessions when betting.
             </p>
+          </div>
+        </div>
+
+        <div className="container">
+          <div className="mb-8 bg-gray-800 rounded-lg p-6">
+            <h2 className="text-2xl font-semibold mb-4">Market Operations</h2>
+
+            <div className="space-y-4">
+
+              <div className="flex space-x-4">
+                <button
+                  onClick={() => placeBet('yes')}
+                  disabled={!mounted || !yellowClientRef.current || !testMarketId}
+                  className="px-4 py-2 bg-green-500 hover:bg-green-600 disabled:bg-gray-600 rounded"
+                >
+                  Bet YES (1 ytest.usd)
+                </button>
+                <button
+                  onClick={() => placeBet('no')}
+                  disabled={!mounted || !yellowClientRef.current || !testMarketId}
+                  className="px-4 py-2 bg-red-500 hover:bg-red-600 disabled:bg-gray-600 rounded"
+                >
+                  Bet NO (1 ytest.usd)
+                </button>
+              </div>
+
+              <div>
+                <button
+                  onClick={closeTestMarket}
+                  disabled={!mounted || !yellowClientRef.current || !testMarketId}
+                  className="px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 rounded"
+                >
+                  Close Market & Return Funds
+                </button>
+              </div>
+            </div>
+          </div>
+          <div className="mb-8 bg-gray-800 rounded-lg p-6">
+            <h2 className="text-2xl font-semibold mb-4">Active App Sessions (Markets)</h2>
+
+            {appSessions.length === 0 ? (
+              <p className="text-gray-400">No active sessions</p>
+            ) : (
+              <div className="space-y-4">
+                {appSessions.map((session: any, idx: number) => {
+                  const totalLocked = session.allocations?.reduce((sum: bigint, alloc: any) =>
+                    sum + BigInt(alloc.amount || 0), 0n) || 0n;
+
+                  // Calculate YES/NO pools if available
+                  const yesPool = session.allocations?.find((a: any) =>
+                    a.participant === '0x0000000000000000000000000000000000000001'
+                  );
+                  const noPool = session.allocations?.find((a: any) =>
+                    a.participant === '0x0000000000000000000000000000000000000002'
+                  );
+
+                  const sessionId = session.appSessionId || session.app_session_id;
+                  const isActiveMarket = sessionId === testMarketId;
+
+                  return (
+                    <div key={idx} className={`bg-gray-700 rounded-lg overflow-hidden border-2 transition-colors ${isActiveMarket ? 'border-yellow-400 shadow-lg shadow-yellow-400/20' : 'border-gray-600 hover:border-blue-500'
+                      }`}>
+                      {/* Header */}
+                      <div className="bg-gradient-to-r from-blue-600 to-purple-600 p-3">
+                        <div className="flex justify-between items-center">
+                          <h3 className="text-lg font-semibold">
+                            {session.application || 'Prediction Market'}
+                            {isActiveMarket && (
+                              <span className="ml-2 text-xs bg-yellow-400 text-gray-900 px-2 py-1 rounded font-bold">
+                                ACTIVE TEST
+                              </span>
+                            )}
+                          </h3>
+                          <span className={`px-2 py-1 rounded text-xs font-bold ${session.status === 'open' ? 'bg-green-500' :
+                            session.status === 'closed' ? 'bg-red-500' : 'bg-yellow-500'
+                            }`}>
+                            {session.status?.toUpperCase()}
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-200 mt-1 font-mono">
+                          ID: {(session.appSessionId || session.app_session_id)?.slice(0, 20)}...
+                        </p>
+                      </div>
+
+                      {/* Market Stats */}
+                      <div className="p-4 space-y-3">
+                        {/* Protocol and Version */}
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <p className="text-xs text-gray-400">Protocol</p>
+                            <p className="text-sm font-mono">{session.protocol}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-gray-400">Version</p>
+                            <p className="text-sm">{session.version}</p>
+                          </div>
+                        </div>
+
+                        {/* Challenge and Nonce */}
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <p className="text-xs text-gray-400">Challenge Period</p>
+                            <p className="text-sm">{session.challenge ? `${session.challenge}s` : 'N/A'}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-gray-400">Nonce</p>
+                            <p className="text-sm font-mono">{session.nonce}</p>
+                          </div>
+                        </div>
+
+                        {/* Quorum */}
+                        <div>
+                          <p className="text-xs text-gray-400">Consensus Quorum</p>
+                          <div className="flex items-center space-x-2">
+                            <div className="flex-1 bg-gray-600 rounded-full h-2">
+                              <div
+                                className="bg-blue-500 h-2 rounded-full"
+                                style={{ width: `${session.quorum || 0}%` }}
+                              />
+                            </div>
+                            <span className="text-sm">{session.quorum || 0}%</span>
+                          </div>
+                        </div>
+
+                        {/* Participants and Weights */}
+                        <div>
+                          <p className="text-xs text-gray-400 mb-2">Participants & Weights</p>
+                          <div className="space-y-1">
+                            {session.participants?.map((participant: string, pIdx: number) => {
+                              const isYesPool = participant === '0x0000000000000000000000000000000000000001';
+                              const isNoPool = participant === '0x0000000000000000000000000000000000000002';
+                              const label = isYesPool ? 'YES Pool' : isNoPool ? 'NO Pool' : 'User';
+                              const color = isYesPool ? 'text-green-400' : isNoPool ? 'text-red-400' : 'text-blue-400';
+
+                              return (
+                                <div key={pIdx} className="flex justify-between items-center text-xs bg-gray-800 p-2 rounded">
+                                  <span className={`${color} font-semibold`}>{label}</span>
+                                  <span className="font-mono text-gray-300">
+                                    {isYesPool || isNoPool ? participant.slice(0, 10) : formatAddress(participant)}
+                                  </span>
+                                  <span className="text-yellow-400">Weight: {session.weights?.[pIdx] || 0}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* Betting Pools */}
+                        {(yesPool || noPool) && (
+                          <div>
+                            <p className="text-xs text-gray-400 mb-2">Betting Pools</p>
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="bg-green-900/30 p-2 rounded border border-green-600">
+                                <p className="text-xs text-green-400 font-semibold">YES</p>
+                                <p className="text-lg font-bold">{yesPool?.amount || '0'}</p>
+                                <p className="text-xs text-gray-400">{yesPool?.asset || 'ytest.usd'}</p>
+                              </div>
+                              <div className="bg-red-900/30 p-2 rounded border border-red-600">
+                                <p className="text-xs text-red-400 font-semibold">NO</p>
+                                <p className="text-lg font-bold">{noPool?.amount || '0'}</p>
+                                <p className="text-xs text-gray-400">{noPool?.asset || 'ytest.usd'}</p>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Total Value Locked */}
+                        <div className="bg-yellow-900/20 p-3 rounded border border-yellow-600">
+                          <p className="text-xs text-yellow-400">Total Value Locked</p>
+                          <p className="text-xl font-bold text-yellow-300">{totalLocked.toString()} ytest.usd</p>
+                        </div>
+
+                        {/* Timestamps */}
+                        <div className="pt-2 border-t border-gray-600">
+                          <div className="grid grid-cols-2 gap-2 text-xs">
+                            <div>
+                              <p className="text-gray-400">Created</p>
+                              <p>{session.createdAt ? new Date(session.createdAt).toLocaleString() : 'N/A'}</p>
+                            </div>
+                            <div>
+                              <p className="text-gray-400">Updated</p>
+                              <p>{session.updatedAt ? new Date(session.updatedAt).toLocaleString() : 'N/A'}</p>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* All Allocations */}
+                        {session.allocations && session.allocations.length > 0 && (
+                          <div className="pt-2 border-t border-gray-600">
+                            <p className="text-xs text-gray-400 mb-2">All Allocations</p>
+                            {session.allocations.map((alloc: any, allocIdx: number) => (
+                              <div key={allocIdx} className="text-xs bg-gray-800 p-2 rounded mb-1 flex justify-between">
+                                <span className="font-mono">{formatAddress(alloc.participant)}</span>
+                                <span className="text-yellow-400">{alloc.amount} {alloc.asset}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       </div>
