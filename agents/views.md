@@ -1,6 +1,6 @@
-# Application Views & Screens
+# PolyStream - Application Views & Screens
 
-This document describes all the screens implemented in the platform, covering both the main Next.js application and the Yellow Network integration app.
+This document describes all the screens implemented in the PolyStream platform, covering both the main Next.js application and the Yellow Network integration app.
 
 ---
 

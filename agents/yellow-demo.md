@@ -1,288 +1,221 @@
-# Yellow App - Architecture Documentation
+# PolyStream - Yellow Network Integration Documentation
 
 ## Table of Contents
 1. [Overview](#overview)
-2. [C4 Model Diagrams](#c4-model-diagrams)
-   - [Context Diagram](#c1-context-diagram)
-   - [Container Diagram](#c2-container-diagram)
-   - [Component Diagram](#c3-component-diagram)
-3. [Application Flow Diagrams](#application-flow-diagrams)
+2. [Architecture & Implementation](#architecture--implementation)
+3. [Getting Started](#getting-started)
+4. [Application Flow Diagrams](#application-flow-diagrams)
    - [Complete User Flow](#complete-user-flow)
    - [Authentication Flow](#authentication-flow)
+   - [App Session Flow](#app-session-flow)
    - [Betting Flow](#betting-flow)
-4. [Technology Stack](#technology-stack)
+5. [Technology Stack](#technology-stack)
+6. [Yellow Network Sandbox](#yellow-network-sandbox)
 
 ## Overview
 
-Yellow App is a decentralized prediction market platform built on the Yellow Network using the Nitrolite SDK. It enables users to create and participate in prediction markets using state channels for scalable, low-cost transactions on the Sepolia testnet.
+PolyStream is a decentralized prediction market platform for gaming streamers, built on the Yellow Network using the Nitrolite SDK. It solves the problem of high costs and latency in traditional blockchain betting by utilizing Yellow Network's state channels for instant, gasless transactions.
 
-**The Complete flow is:**
-1. Connect
-2. Authenticate
-3. Define App
-4. Create Session
-5. Update State
-6. Close
+### Problem Solved
+- **High Costs and Latency**: Traditional on-chain prediction systems are slow and expensive
+- **Web3 Complexity**: Yellow Network simplifies Web3 development with gasless transactions
 
 ### Key Features
-- **Decentralized Prediction Markets**: Binary outcome markets (YES/NO)
+- **Streaming Prediction Markets**: Binary outcome markets for Twitch/gaming events
 - **State Channel Technology**: Off-chain transactions via Yellow Network
-- **Web3 Integration**: MetaMask wallet connection
+- **Gasless Operations**: Session keys enable free transactions
 - **Real-time Updates**: WebSocket communication for live market data
-- **Session-based Authentication**: EIP-712 signature-based auth
+- **EIP-712 Authentication**: Secure wallet-based authentication
+- **Twitch Integration**: Live streamer data and events
 
-## C4 Model Diagrams
+## Architecture & Implementation
 
-### C1: Context Diagram
+### Yellow Network Integration Pattern
 
-This diagram shows how the Yellow App interacts with external actors and systems.
+The application uses Yellow Network's App Sessions as prediction markets:
 
-```mermaid
-graph TB
-    subgraph "External Actors"
-        User[👤 User<br/>Market Participant]
-        Admin[👨‍💼 Admin<br/>Market Creator]
-    end
-
-    subgraph "Yellow App System"
-        YellowApp[Yellow App<br/>Prediction Market Platform]
-    end
-
-    subgraph "External Systems"
-        MetaMask[MetaMask<br/>Web3 Wallet]
-        YellowNetwork[Yellow Network<br/>State Channel Service]
-        Blockchain[Sepolia Blockchain<br/>Ethereum Testnet]
-        IPFS[IPFS<br/>Decentralized Storage]
-    end
-
-    User -->|Places bets,<br/>Views markets| YellowApp
-    Admin -->|Creates markets,<br/>Resolves outcomes| YellowApp
-
-    YellowApp -->|Wallet operations| MetaMask
-    YellowApp -->|State channel ops,<br/>WebSocket msgs| YellowNetwork
-    YellowApp -->|Smart contract calls| Blockchain
-    YellowApp -.->|Future: Store data| IPFS
-
-    MetaMask -->|Signs transactions| Blockchain
-    YellowNetwork -->|Settlement| Blockchain
-
-    style YellowApp fill:#f9f,stroke:#333,stroke-width:4px
-    style User fill:#bbf,stroke:#333,stroke-width:2px
-    style Admin fill:#bbf,stroke:#333,stroke-width:2px
+```
+App Session = Prediction Market
+├── Participants
+│   ├── User Wallet (Bettor)
+│   ├── YES Pool (0x...0001)
+│   └── NO Pool (0x...0002)
+├── Allocations (Fund Distribution)
+│   └── Tracked via OPERATE intents
+└── Version Management
+    └── Each bet increments version
 ```
 
-### C2: Container Diagram
+### Core Components
 
-This diagram breaks down the Yellow App system into its major containers (applications/services).
+#### 1. YellowClient (`lib/yellow/client.ts`)
+- **WebSocket Connection**: Manages persistent connection to Yellow Network
+- **Authentication**: Handles EIP-712 signature flow and session key generation
+- **App Sessions**: Creates and manages prediction markets as app sessions
+- **State Updates**: Submits bets using OPERATE intents
 
-```mermaid
-graph TB
-    subgraph "User's Browser"
-        ReactApp[React SPA<br/>TypeScript/Vite<br/>Port: 5173]
-    end
-
-    subgraph "Yellow App Containers"
-        subgraph "Frontend Application"
-            UI[UI Layer<br/>React Components]
-            StateStore[State Management<br/>Zustand Store]
-            Services[Service Layer<br/>Business Logic]
-        end
-    end
-
-    subgraph "External Services"
-        WS[WebSocket Server<br/>Yellow Network<br/>wss://]
-        RPC[RPC Node<br/>Sepolia Network]
-        MetaMaskAPI[MetaMask API<br/>Browser Extension]
-    end
-
-    ReactApp --> UI
-    UI --> StateStore
-    UI --> Services
-    StateStore <--> Services
-
-    Services -->|WebSocket| WS
-    Services -->|HTTP/JSON-RPC| RPC
-    Services -->|Web3 Provider| MetaMaskAPI
-
-    style ReactApp fill:#f9f,stroke:#333,stroke-width:4px
-    style UI fill:#bbf,stroke:#333,stroke-width:2px
-    style StateStore fill:#bbf,stroke:#333,stroke-width:2px
-    style Services fill:#bbf,stroke:#333,stroke-width:2px
+Key methods:
+```typescript
+connect()                 // Establish WebSocket connection
+authenticate(wallet)      // EIP-712 auth with session key
+createAppSession(request) // Create new prediction market
+submitBet(...)           // Place bet via OPERATE intent
+closeAppSession(...)     // Settle market and distribute funds
 ```
 
-### C3: Component Diagram
+#### 2. InlineMarketOperations (`components/inline-market-operations.tsx`)
+- Reusable betting UI component
+- Manages version tracking for state updates
+- Handles optimistic updates for better UX
+- Calculates odds from pool allocations
 
-This diagram shows the internal components of the React application.
-
-```mermaid
-graph TB
-    subgraph "Pages"
-        HomePage[Home Page<br/>Landing & Connection]
-        MarketPage[Market Page<br/>Betting Interface]
-        AdminPage[Admin Page<br/>Market Management]
-    end
-
-    subgraph "Components"
-        Header[Header<br/>Navigation & Wallet]
-        WalletConnect[WalletConnect<br/>Web3 Connection]
-        MarketCard[MarketCard<br/>Market Display]
-    end
-
-    subgraph "Services"
-        AuthService[Auth Service<br/>EIP-712 Auth]
-        WebSocketService[WebSocket Service<br/>Real-time Comms]
-        ChannelService[Channel Service<br/>State Channel Ops]
-        MarketService[Market Service<br/>Market Logic]
-    end
-
-    subgraph "Store (Zustand)"
-        WalletState[Wallet State]
-        ChannelState[Channel State]
-        AuthState[Auth State]
-        MarketState[Market State]
-        UIState[UI State]
-    end
-
-    subgraph "Configuration"
-        WagmiConfig[Wagmi Config<br/>Web3 Setup]
-        EnvConfig[Environment<br/>Config]
-    end
-
-    HomePage --> WalletConnect
-    HomePage --> AuthService
-    HomePage --> ChannelService
-
-    MarketPage --> MarketCard
-    MarketPage --> MarketService
-
-    AdminPage --> MarketService
-
-    Header --> WalletConnect
-
-    AuthService --> WebSocketService
-    ChannelService --> WebSocketService
-    MarketService --> WebSocketService
-
-    AuthService --> AuthState
-    ChannelService --> ChannelState
-    MarketService --> MarketState
-    WalletConnect --> WalletState
-
-    All_Components[All Components] -.-> UIState
-
-    WalletConnect --> WagmiConfig
-    WebSocketService --> EnvConfig
-
-    style HomePage fill:#f9f,stroke:#333,stroke-width:2px
-    style MarketPage fill:#f9f,stroke:#333,stroke-width:2px
-    style AdminPage fill:#f9f,stroke:#333,stroke-width:2px
+#### 3. Provider Architecture (`app/providers.tsx`)
 ```
+<QueryClientProvider>     // React Query for data fetching
+  <WagmiProvider>         // Web3 wallet connection
+    <YellowProvider>      // Yellow Network client context
+      {children}
+    </YellowProvider>
+  </WagmiProvider>
+</QueryClientProvider>
+```
+
+## Getting Started
+
+### Prerequisites
+- Node.js 20+
+- MetaMask or compatible Web3 wallet
+- Test funds (ytest.usd) from Yellow Network faucet
+
+### Installation
+
+```bash
+# Clone repository
+git clone [repository-url]
+cd hackmoney-poly-stream
+
+# Install dependencies
+npm install
+
+# Set up environment variables
+cp .env.example .env
+# Edit .env with your credentials:
+# - NEXT_PUBLIC_SUPABASE_URL
+# - NEXT_PUBLIC_SUPABASE_ANON_KEY
+# - NEXT_PUBLIC_TWITCH_CLIENT_ID
+# - TWITCH_CLIENT_SECRET
+
+# Run development server (port 3001)
+npm run dev
+```
+
+### Getting Test Tokens
+
+Request test tokens from the Yellow Network sandbox faucet:
+
+```bash
+curl -XPOST https://clearnet-sandbox.yellow.com/faucet/requestTokens \
+  -H "Content-Type: application/json" \
+  -d '{"userAddress":"YOUR_WALLET_ADDRESS"}'
+```
+
+This will credit your account with ytest.usd tokens (usually 10,000,000 units = 10 tokens).
 
 ## Application Flow Diagrams
 
 ### Complete User Flow
 
-This diagram shows the complete user journey from landing to placing a bet.
-
 ```mermaid
 sequenceDiagram
     participant User
-    participant Browser
-    participant YellowApp
+    participant PolyStream
     participant MetaMask
     participant YellowNetwork
-    participant Blockchain
+    participant TwitchAPI
 
-    User->>Browser: Visit App
-    Browser->>YellowApp: Load React App
-    YellowApp->>YellowApp: Initialize Stores
+    User->>PolyStream: Visit App
+    PolyStream->>PolyStream: Load React App & Providers
 
     rect rgb(200, 220, 255)
-        Note over User,YellowNetwork: Wallet Connection Phase
-        User->>YellowApp: Click "Connect Wallet"
-        YellowApp->>MetaMask: Request Connection
-        MetaMask->>User: Prompt Authorization
+        Note over User,MetaMask: Wallet Connection
+        User->>PolyStream: Connect Wallet
+        PolyStream->>MetaMask: Request Connection
         User->>MetaMask: Approve
-        MetaMask->>YellowApp: Return Account
+        MetaMask->>PolyStream: Return Account
     end
 
     rect rgb(255, 220, 200)
-        Note over YellowApp,YellowNetwork: WebSocket Connection Phase
-        YellowApp->>YellowNetwork: Connect WebSocket
-        YellowNetwork->>YellowApp: Connection Established
+        Note over PolyStream,YellowNetwork: Yellow Network Setup
+        PolyStream->>YellowNetwork: WebSocket Connect
+        YellowNetwork->>PolyStream: Connected
+        PolyStream->>PolyStream: Generate Session Key
+        PolyStream->>YellowNetwork: Auth Request
+        YellowNetwork->>PolyStream: Auth Challenge
+        PolyStream->>MetaMask: Sign EIP-712
+        User->>MetaMask: Approve
+        MetaMask->>PolyStream: Signature
+        PolyStream->>YellowNetwork: Auth Verify
+        YellowNetwork->>PolyStream: Authenticated
     end
 
     rect rgb(220, 255, 220)
-        Note over User,YellowNetwork: Authentication Phase
-        User->>YellowApp: Click "Connect to Yellow"
-        YellowApp->>YellowApp: Generate Session Key
-        YellowApp->>YellowNetwork: Send Auth Request
-        YellowNetwork->>YellowApp: Auth Challenge
-        YellowApp->>MetaMask: Sign EIP-712 Message
-        User->>MetaMask: Approve Signature
-        MetaMask->>YellowApp: Return Signature
-        YellowApp->>YellowNetwork: Send Auth Verify
-        YellowNetwork->>YellowApp: Auth Success
-    end
-
-    rect rgb(255, 255, 200)
-        Note over User,Blockchain: Channel Creation Phase
-        YellowApp->>MetaMask: Create Channel TX
-        User->>MetaMask: Approve TX
-        MetaMask->>Blockchain: Submit TX
-        Blockchain->>MetaMask: TX Receipt
-        MetaMask->>YellowApp: Channel Created
-        YellowApp->>YellowNetwork: Register Channel
+        Note over PolyStream,TwitchAPI: Market Creation
+        PolyStream->>TwitchAPI: Fetch Streamer Data
+        TwitchAPI->>PolyStream: Stream Info
+        User->>PolyStream: Create Market
+        PolyStream->>YellowNetwork: Create App Session
+        YellowNetwork->>PolyStream: Session ID
     end
 
     rect rgb(255, 220, 255)
-        Note over User,YellowNetwork: Betting Phase
-        User->>YellowApp: Navigate to Market
-        YellowApp->>YellowApp: Load Market Data
-        User->>YellowApp: Select Outcome & Amount
-        User->>YellowApp: Place Bet
-        YellowApp->>YellowNetwork: Submit Bet (Off-chain)
-        YellowNetwork->>YellowApp: Bet Confirmed
-        YellowApp->>User: Show Success
+        Note over User,YellowNetwork: Betting
+        User->>PolyStream: Place Bet (YES/NO)
+        PolyStream->>YellowNetwork: Submit OPERATE Intent
+        YellowNetwork->>PolyStream: State Updated
+        PolyStream->>User: Show Success
     end
 ```
 
 ### Authentication Flow
 
-Detailed authentication flow using EIP-712 signatures.
+The EIP-712 authentication creates a session key for gasless operations:
 
 ```mermaid
 flowchart TB
-    Start([User Clicks Connect])
-    GenKey[Generate Session Private Key]
-    CreateAccount[Create Session Account]
-    PrepareAuth[Prepare Auth Parameters:<br/>- Session Key<br/>- Allowances<br/>- Expiry<br/>- Scope]
+    Start([User Connects])
+    GenKey[Generate Session Private Key<br/>viem: generatePrivateKey()]
 
-    SendAuthReq[Send Auth Request<br/>to Yellow Network]
-    WaitChallenge{Wait for<br/>Challenge}
+    CreateSigner[Create ECDSA Signer<br/>for Session Key]
 
-    RecvChallenge[Receive Challenge Message]
-    CreateSigner[Create EIP-712 Signer<br/>with Wallet Client]
-    SignChallenge[Sign Challenge<br/>with Main Wallet]
+    PrepareAuth[Prepare Auth Request:<br/>- Main Wallet Address<br/>- Session Key Address<br/>- Allowances: 1B ytest.usd<br/>- Expiry: 24 hours<br/>- Application: PolyStream]
 
-    UserApprove{User Approves<br/>in MetaMask?}
-    SendVerify[Send Auth Verify<br/>with Signature]
+    SendAuthReq[Send auth_request<br/>via WebSocket]
 
-    WaitSuccess{Wait for<br/>Success}
-    AuthSuccess[Authentication Complete<br/>Store Session]
-    AuthFailed[Authentication Failed]
+    WaitChallenge{Receive<br/>auth_challenge?}
+
+    CreateEIP712[Create EIP-712 Signer<br/>with Main Wallet]
+
+    SignChallenge[Sign Challenge<br/>MetaMask Prompt]
+
+    UserApprove{User<br/>Approves?}
+
+    SendVerify[Send auth_verify<br/>with Signature]
+
+    WaitSuccess{Receive<br/>Success?}
+
+    AuthSuccess[✅ Authenticated<br/>Session Key Active]
+    AuthFailed[❌ Auth Failed]
 
     Start --> GenKey
-    GenKey --> CreateAccount
-    CreateAccount --> PrepareAuth
+    GenKey --> CreateSigner
+    CreateSigner --> PrepareAuth
     PrepareAuth --> SendAuthReq
     SendAuthReq --> WaitChallenge
 
-    WaitChallenge -->|Received| RecvChallenge
+    WaitChallenge -->|Yes| CreateEIP712
     WaitChallenge -->|Timeout| AuthFailed
 
-    RecvChallenge --> CreateSigner
-    CreateSigner --> SignChallenge
+    CreateEIP712 --> SignChallenge
     SignChallenge --> UserApprove
 
     UserApprove -->|Yes| SendVerify
@@ -292,185 +225,236 @@ flowchart TB
     WaitSuccess -->|Success| AuthSuccess
     WaitSuccess -->|Error| AuthFailed
 
-    style AuthSuccess fill:#9f9,stroke:#333,stroke-width:2px
-    style AuthFailed fill:#f99,stroke:#333,stroke-width:2px
+    style AuthSuccess fill:#9f9
+    style AuthFailed fill:#f99
+```
+
+### App Session Flow
+
+App Sessions are the core mechanism for prediction markets:
+
+```mermaid
+flowchart TB
+    CreateMarket([Create Market])
+
+    DefineParticipants[Define Participants:<br/>- User Wallet<br/>- YES Pool (0x...0001)<br/>- NO Pool (0x...0002)]
+
+    InitAllocations[Initialize Allocations:<br/>User: Initial Funds<br/>YES Pool: 0<br/>NO Pool: 0]
+
+    CreateSession[Create App Session<br/>via createAppSessionMessage()]
+
+    SessionActive[Session Active<br/>Version: 1]
+
+    UserBet{User Places<br/>Bet?}
+
+    PrepareOperate[Prepare OPERATE Intent:<br/>- Move funds from User<br/>- Add to YES/NO Pool<br/>- Increment Version]
+
+    SubmitState[Submit State Update<br/>via submitAppStateMessage()]
+
+    UpdateSuccess[State Updated<br/>New Version]
+
+    MarketResolve{Market<br/>Resolves?}
+
+    CloseSession[Close App Session<br/>Distribute Final Allocations]
+
+    MarketClosed[Market Closed<br/>Funds Distributed]
+
+    CreateMarket --> DefineParticipants
+    DefineParticipants --> InitAllocations
+    InitAllocations --> CreateSession
+    CreateSession --> SessionActive
+    SessionActive --> UserBet
+
+    UserBet -->|Yes| PrepareOperate
+    UserBet -->|No| MarketResolve
+
+    PrepareOperate --> SubmitState
+    SubmitState --> UpdateSuccess
+    UpdateSuccess --> UserBet
+
+    MarketResolve -->|Yes| CloseSession
+    MarketResolve -->|No| UserBet
+
+    CloseSession --> MarketClosed
+
+    style SessionActive fill:#bbf
+    style UpdateSuccess fill:#9f9
+    style MarketClosed fill:#f9f
 ```
 
 ### Betting Flow
 
-The process of placing a bet on a prediction market.
+Detailed betting process using OPERATE intents:
 
 ```mermaid
 flowchart TB
-    Start([User on Market Page])
-    LoadMarkets[Load Active Markets]
-    DisplayMarket[Display Market:<br/>- Question<br/>- Outcomes<br/>- Probabilities<br/>- Volume]
+    Start([User on Market])
 
-    SelectOutcome{User Selects<br/>Outcome?}
-    SelectYes[Select YES]
-    SelectNo[Select NO]
+    SelectOutcome{Select<br/>YES or NO?}
 
-    EnterAmount[Enter Bet Amount]
-    ValidateAmount{Valid<br/>Amount?}
+    EnterAmount[Enter Bet Amount<br/>in ytest.usd]
 
-    CheckBalance{Sufficient<br/>Channel<br/>Balance?}
+    CheckUser{User has<br/>Allocation?}
 
-    CalcPayout[Calculate<br/>Potential Payout]
-    ConfirmBet[User Confirms Bet]
+    AddAllocation[Add User to Allocations<br/>with Test Funds]
 
-    SubmitBet[Submit to Market Service]
-    UpdateLocal[Update Local State:<br/>- Add to positions<br/>- Update probabilities]
+    CheckBalance{Sufficient<br/>Balance?}
 
-    SendWS[Send via WebSocket<br/>to Yellow Network]
+    CalcNewAlloc[Calculate New Allocations:<br/>- Deduct from User<br/>- Add to Pool<br/>- Verify Sum Constant]
 
-    WaitConfirm{Wait for<br/>Confirmation}
+    IncrVersion[Increment Version<br/>versionRef.current++]
 
-    BetSuccess[Bet Placed Successfully<br/>Update UI]
-    BetFailed[Bet Failed<br/>Show Error]
+    CreateOperate[Create OPERATE Intent<br/>with New Allocations]
 
-    RefreshMarket[Refresh Market Data]
+    SubmitBet[Submit via<br/>yellowClient.submitBet()]
 
-    Start --> LoadMarkets
-    LoadMarkets --> DisplayMarket
-    DisplayMarket --> SelectOutcome
+    WaitConfirm{State<br/>Updated?}
 
-    SelectOutcome -->|YES| SelectYes
-    SelectOutcome -->|NO| SelectNo
-    SelectOutcome -->|None| DisplayMarket
+    Success[✅ Bet Placed<br/>Update UI]
+    Failed[❌ Bet Failed]
 
-    SelectYes --> EnterAmount
-    SelectNo --> EnterAmount
+    Start --> SelectOutcome
+    SelectOutcome --> EnterAmount
+    EnterAmount --> CheckUser
 
-    EnterAmount --> ValidateAmount
-    ValidateAmount -->|Invalid| EnterAmount
-    ValidateAmount -->|Valid| CheckBalance
+    CheckUser -->|No| AddAllocation
+    CheckUser -->|Yes| CheckBalance
 
-    CheckBalance -->|Insufficient| BetFailed
-    CheckBalance -->|Sufficient| CalcPayout
+    AddAllocation --> CheckBalance
 
-    CalcPayout --> ConfirmBet
-    ConfirmBet --> SubmitBet
+    CheckBalance -->|No| Failed
+    CheckBalance -->|Yes| CalcNewAlloc
 
-    SubmitBet --> UpdateLocal
-    UpdateLocal --> SendWS
+    CalcNewAlloc --> IncrVersion
+    IncrVersion --> CreateOperate
+    CreateOperate --> SubmitBet
+    SubmitBet --> WaitConfirm
 
-    SendWS --> WaitConfirm
-    WaitConfirm -->|Success| BetSuccess
-    WaitConfirm -->|Error| BetFailed
+    WaitConfirm -->|Success| Success
+    WaitConfirm -->|Error| Failed
 
-    BetSuccess --> RefreshMarket
-    RefreshMarket --> DisplayMarket
-
-    style BetSuccess fill:#9f9,stroke:#333,stroke-width:2px
-    style BetFailed fill:#f99,stroke:#333,stroke-width:2px
+    style Success fill:#9f9
+    style Failed fill:#f99
 ```
 
 ## Technology Stack
 
-### Frontend
-- **Framework**: React 19.2 with TypeScript
-- **Build Tool**: Vite 7.2
-- **Styling**: Tailwind CSS 3.4
-- **State Management**: Zustand 5.0
-- **Routing**: React Router DOM 7.13
+### Core Stack
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| **Framework** | Next.js 16 (App Router) | Full-stack React framework |
+| **Language** | TypeScript 5.2 | Type safety |
+| **Styling** | Tailwind CSS + shadcn/ui | Modern UI components |
+| **State** | React Query + Wagmi | Data fetching & Web3 state |
+| **Database** | Supabase | User data & market metadata |
 
-### Web3 Integration
-- **Wallet Connection**: Wagmi 2.5
-- **Blockchain Interaction**: Viem 2.45
-- **Network**: Sepolia Testnet
-- **State Channels**: @erc7824/nitrolite 0.5.3
+### Yellow Network Integration
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| **SDK** | @erc7824/nitrolite 0.5.3 | Yellow Network protocol |
+| **Auth** | EIP-712 Signatures | Secure wallet authentication |
+| **Transport** | WebSocket | Real-time communication |
+| **Session Keys** | Viem accounts | Gasless operations |
 
-### Communication
-- **Real-time**: Native WebSocket API
-- **Protocol**: Yellow Network Custom Protocol
-- **Authentication**: EIP-712 Signatures
+### External Integrations
+| Service | Purpose |
+|---------|---------|
+| **Twitch API** | Streamer data and events |
+| **MetaMask** | Wallet connection |
+| **Yellow Network** | State channels |
 
-### Development
-- **Language**: TypeScript 5.9
-- **Linting**: ESLint 9.39
-- **Package Manager**: npm
-- **Node Version**: 24.10+
+## Yellow Network Sandbox
+
+### Environment Details
+- **WebSocket URL**: `wss://clearnet-sandbox.yellow.com/ws`
+- **Faucet URL**: `https://clearnet-sandbox.yellow.com/faucet/requestTokens`
+- **Test Token**: `ytest.usd` (6 decimals)
+- **Session Expiry**: 24 hours
+- **Default Allowance**: 1 billion ytest.usd
+
+### Configuration (`lib/yellow/config.ts`)
+```typescript
+export const YELLOW_CONFIG = {
+  CLEARNODE_WS_URL: 'wss://clearnet-sandbox.yellow.com/ws',
+  APPLICATION_NAME: 'PolyStream',
+  SESSION_KEY_EXPIRY: 86400, // 24 hours
+  SESSION_KEY_SCOPE: 'session',
+  DEFAULT_ALLOWANCES: [
+    { asset: 'ytest.usd', amount: '1000000000' }
+  ]
+};
+```
+
+### Key Concepts
+
+#### App Sessions as Markets
+- Each prediction market is a Yellow Network App Session
+- Participants include user wallets and pool addresses
+- Allocations track fund distribution
+- OPERATE intents move funds between participants
+
+#### Version Management
+- Each state change increments the version
+- Version 1: Initial market creation
+- Version 2+: Each bet or state update
+- Critical for concurrent operations
+
+#### Gasless Operations
+- Session keys enable free transactions
+- Main wallet signs once during auth
+- All subsequent operations use session key
+- No gas fees for users
+
+## Development Commands
+
+```bash
+# Development
+npm run dev          # Start dev server (port 3001)
+
+# Build & Production
+npm run build        # Create production build
+npm start           # Start production server
+
+# Code Quality
+npm run typecheck   # TypeScript type checking
+npm run lint        # ESLint checks
+```
 
 ## Architecture Patterns
 
-### Design Patterns Used
-1. **Service Layer Pattern**: Business logic separated into service modules
-2. **Store Pattern**: Centralized state management with Zustand
-3. **Singleton Pattern**: Single instances for WebSocket, Auth, and Channel managers
-4. **Event-Driven Architecture**: WebSocket events drive state updates
-5. **Component Composition**: Reusable UI components
+### Design Patterns
+1. **Client Wrapper Pattern**: YellowClient encapsulates SDK complexity
+2. **Provider Pattern**: Context providers for global state
+3. **Optimistic Updates**: Update UI before confirmation
+4. **Version Tracking**: Manage concurrent state updates
+5. **Component Composition**: Reusable betting interface
 
 ### Key Architectural Decisions
-1. **Client-Side Only**: No backend server, direct connection to Yellow Network
-2. **State Channels**: Off-chain transactions for scalability
-3. **Session Keys**: Temporary keys for transaction signing
-4. **Optimistic Updates**: Update UI before confirmation for better UX
-5. **WebSocket Reconnection**: Automatic reconnection with exponential backoff
+1. **Next.js App Router**: Modern React server components
+2. **State Channels**: Off-chain for instant, free transactions
+3. **Session Keys**: 24-hour keys for gasless operations
+4. **Inline Operations**: Embedded betting UI in market cards
+5. **WebSocket Events**: Real-time market updates
 
 ### Security Considerations
-1. **Session Key Generation**: Client-side generation of temporary keys
-2. **EIP-712 Signatures**: Typed structured data signing
-3. **Allowance Limits**: Predefined spending limits for sessions
-4. **Expiry Times**: 1-hour session expiry for security
-5. **Environment Variables**: Sensitive config in .env files
-
-## Data Flow
-
-### State Management Flow
-```
-User Action → Component → Service → WebSocket → Yellow Network
-                ↓                        ↓
-            Store Update ← ← ← ← ← Response
-                ↓
-            UI Re-render
-```
-
-### Market Data Flow
-```
-Market Service → Local State (Optimistic)
-        ↓
-    WebSocket → Yellow Network
-        ↓
-    Confirmation → Update State → Refresh UI
-```
-
-### Channel Balance Flow
-```
-Deposit → Blockchain TX → Channel Contract
-                              ↓
-                    Yellow Network Update
-                              ↓
-                    WebSocket Notification
-                              ↓
-                        Update Store
-```
-
-## Deployment Architecture
-
-### Current Setup (Development)
-- **Frontend**: Vite Dev Server (localhost:5173)
-- **Network**: Sepolia Testnet
-- **WebSocket**: Yellow Network Test Environment
-
-### Production Considerations
-- **Frontend Hosting**: Static site (Vercel/Netlify/IPFS)
-- **Network**: Mainnet or L2 (Polygon, Arbitrum)
-- **WebSocket**: Production Yellow Network
-- **CDN**: CloudFlare for static assets
-- **Monitoring**: Error tracking and analytics
+1. **EIP-712 Signatures**: Typed, structured data signing
+2. **Session Key Isolation**: Temporary keys with limited scope
+3. **Allowance Limits**: Predefined spending limits
+4. **Environment Variables**: Secure credential management
+5. **Client-side Validation**: Amount and balance checks
 
 ## Future Enhancements
 
 ### Planned Features
-1. **Multi-Market Support**: Multiple simultaneous markets
-2. **Market Categories**: Sports, Politics, Crypto, etc.
-3. **Liquidity Pools**: AMM-style market making
-4. **Mobile App**: React Native version
-5. **Analytics Dashboard**: Market statistics and trends
+- **Oracle Integration**: Automated market resolution
+- **Multiple Markets**: Concurrent prediction markets
+- **Liquidity Pools**: AMM-style market making
+- **Mobile App**: React Native version
+- **Analytics Dashboard**: Market statistics
 
 ### Technical Improvements
-1. **Server-Side Rendering**: Next.js for SEO
-2. **GraphQL API**: For complex queries
-3. **IPFS Integration**: Decentralized data storage
-4. **Push Notifications**: Market updates
-5. **Multi-Chain Support**: Cross-chain markets
+- **Production Network**: Mainnet deployment
+- **IPFS Storage**: Decentralized market data
+- **Push Notifications**: Real-time updates
+- **Multi-chain**: Cross-chain markets
+- **Advanced Orders**: Limit orders, stop-loss
