@@ -12,12 +12,14 @@ import type { RPCResponse } from '@erc7824/nitrolite';
 // ============================================================================
 
 export interface AppDefinition {
-  protocol: 'NitroRPC/0.4';
-  participants: [string, string, string]; // [poolYes, poolNo, oracle]
-  weights: [number, number, number]; // [0, 0, 100] - oracle controls
-  quorum: number; // 100
-  challenge: number; // Challenge period in seconds
-  nonce: number; // Unique identifier
+  protocol?: 'NitroRPC/0.4';
+  participants: string[] | number; // Array of participant addresses or participant count
+  weights?: number[]; // Weight for each participant
+  quorum?: number; // 100
+  challenge?: number; // Challenge period in seconds
+  nonce?: number; // Unique identifier
+  application?: string; // Application name
+  name?: string; // Session name
 }
 
 export interface Allocation {

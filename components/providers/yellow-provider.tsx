@@ -150,9 +150,15 @@ export function YellowProvider({ children }: { children: React.ReactNode }) {
   }, [client]);
 
   // Auto-connect when component mounts (if needed)
+  // Defer to avoid state updates during hydration
   useEffect(() => {
     if (client && state.status === ConnectionStatus.DISCONNECTED) {
-      connect().catch(console.error);
+      // Use setTimeout to defer the connection attempt until after hydration
+      const timer = setTimeout(() => {
+        connect().catch(console.error);
+      }, 100);
+
+      return () => clearTimeout(timer);
     }
   }, [client, state.status, connect]);
 

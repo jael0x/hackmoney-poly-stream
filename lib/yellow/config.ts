@@ -33,6 +33,9 @@ export const YELLOW_CONFIG = {
     MIN_BET_AMOUNT: '1', // 1 USDC minimum bet
     MAX_BET_AMOUNT: '10000', // 10K USDC maximum bet
     DEFAULT_DURATION: 7 * 24 * 60 * 60, // 7 days in seconds
+    // Pool addresses for YES and NO outcomes
+    POOL_YES_ADDRESS: '0x0000000000000000000000000000000000000001' as const,
+    POOL_NO_ADDRESS: '0x0000000000000000000000000000000000000002' as const,
   },
 
   // Oracle configuration

@@ -6,7 +6,7 @@ import { Providers } from './providers';
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'StreamBet - Gaming Streamer Prediction Markets',
+  title: 'PolyStream - Gaming Streamer Prediction Markets',
   description: 'Predict outcomes from your favorite gaming streamers and win big',
   openGraph: {
     images: [

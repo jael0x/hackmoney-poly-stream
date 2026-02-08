@@ -44,11 +44,21 @@ export async function POST(request: NextRequest) {
     await yellowClient.connect();
 
     // Create Yellow Network App Session
+    const oracleAddress = yellowClient.getAddress();
     const appSessionId = await yellowClient.createAppSession({
       definition: {
+        protocol: 'NitroRPC/0.4',
         application: YELLOW_CONFIG.APPLICATION_NAME,
         name: `Market: ${question.substring(0, 50)}`,
-        participants: 3, // YES pool, NO pool, Oracle
+        participants: [
+          YELLOW_CONFIG.DEFAULT_POOL_YES,
+          YELLOW_CONFIG.DEFAULT_POOL_NO,
+          oracleAddress
+        ] as string[],
+        weights: [0, 0, 100], // Oracle has full control to close
+        quorum: 100,
+        challenge: 3600,
+        nonce: Date.now(),
       },
       allocations: [
         {
@@ -62,7 +72,7 @@ export async function POST(request: NextRequest) {
           amount: '0',
         },
         {
-          participant: yellowClient.getAddress() as `0x${string}`,
+          participant: oracleAddress as `0x${string}`,
           asset: 'ytest.usd',
           amount: '0',
         },

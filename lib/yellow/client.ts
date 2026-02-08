@@ -23,6 +23,7 @@ import {
   RPCAppStateIntent,
 } from '@erc7824/nitrolite';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
+import { createWalletClient, http } from 'viem';
 import type { Address, Hex } from 'viem';
 import type {
   YellowClientConfig,
@@ -102,7 +103,14 @@ export class YellowClient {
   }
 
   isAuthenticated(): boolean {
-    return this.state.status === ConnectionStatus.AUTHENTICATED;
+    const isAuth = this.state.status === ConnectionStatus.AUTHENTICATED;
+    const hasSigner = !!this.sessionSigner;
+
+    if (isAuth && !hasSigner) {
+      console.error('⚠️ WARNING: Authenticated but no session signer!');
+    }
+
+    return isAuth && hasSigner;
   }
 
   getState(): YellowClientState {
@@ -114,6 +122,26 @@ export class YellowClient {
   // ============================================================================
 
   /**
+   * Authenticate with a private key (for server-side operations)
+   */
+  async authenticateWithPrivateKey(privateKey: Hex): Promise<void> {
+    const account = privateKeyToAccount(privateKey);
+    const walletClient = createWalletClient({
+      account,
+      chain: {
+        id: 1,
+        name: 'Ethereum',
+        network: 'ethereum',
+        nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+        rpcUrls: { default: { http: ['https://eth.llamarpc.com'] }, public: { http: ['https://eth.llamarpc.com'] } },
+      },
+      transport: http(),
+    });
+
+    return this.authenticate(account.address, walletClient);
+  }
+
+  /**
    * Authenticate with Yellow Network using EIP-712 signatures
    * Creates a session key for gasless operations
    */
@@ -122,16 +150,38 @@ export class YellowClient {
     walletSigner: any // Should be from wagmi/viem
   ): Promise<void> {
     return new Promise(async (resolve, reject) => {
+      // Add authentication timeout
+      const authTimeout = setTimeout(() => {
+        console.error('❌ Authentication timeout - no auth_verify response received');
+        this.authResolve = undefined;
+        this.authReject = undefined;
+        this.updateState({
+          status: ConnectionStatus.ERROR,
+          error: 'Authentication timeout - server did not respond with auth_verify',
+        });
+        reject(new Error('Authentication timeout after 30 seconds'));
+      }, 30000); // 30 second timeout
+
       try {
         if (!this.isConnected()) {
+          clearTimeout(authTimeout);
           throw new Error('Not connected to Yellow Network');
         }
 
         console.log('🔐 Starting authentication...');
 
-        // Store promise handlers
-        this.authResolve = resolve;
-        this.authReject = reject;
+        // Store promise handlers with timeout cleanup
+        const originalResolve = resolve;
+        const originalReject = reject;
+
+        this.authResolve = () => {
+          clearTimeout(authTimeout);
+          originalResolve();
+        };
+        this.authReject = (error: Error) => {
+          clearTimeout(authTimeout);
+          originalReject(error);
+        };
 
         // Store main wallet info
         this.mainAddress = walletAddress;
@@ -139,11 +189,17 @@ export class YellowClient {
 
         // Generate session key
         this.sessionPrivateKey = generatePrivateKey();
+        console.log('🔑 Generated session private key');
+
+        // Create ECDSA signer for the session key
         this.sessionSigner = createECDSAMessageSigner(this.sessionPrivateKey);
+        console.log('✅ Created ECDSA message signer');
+
         const sessionAccount = privateKeyToAccount(this.sessionPrivateKey);
         this.sessionAddress = sessionAccount.address;
 
         console.log('📝 Session key generated:', this.sessionAddress);
+        console.log('  - Session signer ready:', !!this.sessionSigner);
 
         // Create session key configuration
         const allowances: Array<{ asset: string; amount: string }> = [...YELLOW_CONFIG.DEFAULT_ALLOWANCES];
@@ -170,6 +226,7 @@ export class YellowClient {
         // Step 2: Wait for auth_challenge
         // This is handled in handleMessage() which will call handleAuthChallenge()
       } catch (error) {
+        clearTimeout(authTimeout); // Clear timeout on error
         console.error('Authentication failed:', error);
         this.updateState({
           status: ConnectionStatus.ERROR,
@@ -189,14 +246,13 @@ export class YellowClient {
       }
 
       console.log('🔑 Received auth_challenge');
-      console.log('Challenge message structure:', JSON.stringify(message, null, 2));
 
       // Sign challenge with main wallet using EIP-712
       const expiresAt = Math.floor(Date.now() / 1000) + YELLOW_CONFIG.SESSION_KEY_EXPIRY;
       const authParamsForSigner = {
         scope: YELLOW_CONFIG.SESSION_KEY_SCOPE,
-        application: this.mainAddress!, // IMPORTANT: Must be wallet address, not app name
-        participant: this.sessionAddress!,
+        application: YELLOW_CONFIG.APPLICATION_NAME, // Must match what was sent in auth_request
+        participant: this.mainAddress!, // Main wallet address
         session_key: this.sessionAddress!,
         expires_at: BigInt(expiresAt),
         allowances: [...YELLOW_CONFIG.DEFAULT_ALLOWANCES] as Array<{ asset: string; amount: string }>,
@@ -221,24 +277,11 @@ export class YellowClient {
 
       console.log('📤 Sent auth_verify');
 
-      // Authentication is complete after sending auth_verify
-      // The server doesn't send a separate auth_verify response
-      console.log('🔐 Authentication flow complete');
-      this.updateState({
-        status: ConnectionStatus.AUTHENTICATED,
-        address: this.mainAddress,
-        sessionKey: this.sessionAddress,
-      });
+      // IMPORTANT: Don't mark as authenticated yet - wait for server confirmation
+      // The server will either send an auth_verify success or an error response
+      console.log('⏳ Waiting for server authentication confirmation...');
 
-      // Resolve the authentication promise
-      if (this.authResolve) {
-        this.authResolve();
-        this.authResolve = undefined;
-        this.authReject = undefined;
-      }
-
-      // Fetch initial unified balance
-      await this.fetchUnifiedBalance();
+      // Don't resolve the promise here - wait for handleAuthVerify or error handler
     } catch (error) {
       console.error('Failed to handle auth challenge:', error);
 
@@ -249,12 +292,21 @@ export class YellowClient {
         this.authReject = undefined;
       }
 
+      this.updateState({
+        status: ConnectionStatus.ERROR,
+        error: error instanceof Error ? error.message : 'Authentication failed',
+      });
+
       throw error;
     }
   }
 
   private async handleAuthVerify(): Promise<void> {
     try {
+      console.log('✅ Handling auth verify - setting status to AUTHENTICATED');
+      console.log('  - Main address:', this.mainAddress);
+      console.log('  - Session address:', this.sessionAddress);
+      console.log('  - Session signer exists:', !!this.sessionSigner);
 
       this.updateState({
         status: ConnectionStatus.AUTHENTICATED,
@@ -264,13 +316,13 @@ export class YellowClient {
 
       // Resolve the authentication promise
       if (this.authResolve) {
+        console.log('✅ Resolving authentication promise');
         this.authResolve();
         this.authResolve = undefined;
         this.authReject = undefined;
       }
 
-      // Fetch initial unified balance
-      await this.fetchUnifiedBalance();
+      // Don't fetch balance here - let the page do it explicitly
     } catch (error) {
       console.error('Failed to complete authentication:', error);
       throw error;
@@ -295,11 +347,9 @@ export class YellowClient {
       );
 
       const response = await this.client.sendMessage(balanceMsg);
-      console.log('📊 Ledger balance response for', accountToQuery, ':', response);
 
       // The response comes back with balances in params.ledgerBalances
       const balances = (response as any).params?.ledgerBalances || [];
-      console.log('📊 Extracted ledger balances:', balances);
 
       const unifiedBalance: UnifiedBalance = {
         balances,
@@ -363,17 +413,37 @@ export class YellowClient {
 
   private async handleMessage(message: RPCResponse): Promise<void> {
     try {
-      // Debug logging for all messages
-      console.log('📨 Received message:', message.method || 'no method', message);
+      // Log all messages for debugging
+      console.log('📨 Received message:', {
+        method: message.method,
+        hasParams: !!message.params,
+        hasError: !!(message.params as any)?.error,
+        timestamp: new Date().toISOString()
+      });
+
+      // Log full details for important messages
+      if (message.method &&
+          (message.method === RPCMethod.AuthChallenge ||
+           message.method === RPCMethod.AuthVerify ||
+           message.method === RPCMethod.Error)) {
+        console.log('📨 Full message:', JSON.stringify(message, null, 2));
+      }
+
+      // Log the actual method value for debugging
+      if (typeof message.method === 'string') {
+        console.log(`📥 Method value: "${message.method}"`);
+      }
 
       switch (message.method) {
         case RPCMethod.AuthChallenge:
+        case 'auth_challenge': // Handle both cases explicitly
+          console.log('🔑 Processing auth_challenge');
           await this.handleAuthChallenge(message);
           break;
 
         case RPCMethod.AuthVerify:
-          console.log('✅ Authentication successful!');
-          console.log('🔐 Auth verify response:', JSON.stringify(message, null, 2));
+        case 'auth_verify': // Handle both cases explicitly
+          console.log('✅ Received auth_verify response - authentication successful!');
           await this.handleAuthVerify();
           break;
 
@@ -382,34 +452,52 @@ export class YellowClient {
           // Store wallet balance separately
           const walletBalances = (message.params as any)?.balanceUpdates || [];
           this.updateState({ walletBalances });
-
-          // Also fetch unified balance if authenticated
-          if (this.isAuthenticated()) {
-            await this.fetchUnifiedBalance();
-          }
           this.emit('balance_update', message);
           break;
 
         case RPCMethod.Error:
-          console.error('❌ Yellow Network error:', message.params);
+        case 'error': // Handle both cases
+          const errorMsg = (message.params as any)?.error || 'Unknown error';
+          console.error('❌ Yellow Network error:', errorMsg);
+
+          // Log request ID to trace which request failed
+          if (message.requestId) {
+            console.error(`   Request ID that failed: ${message.requestId}`);
+          }
+
           this.emit('error', message);
 
-          // If error during auth, reject the promise
-          if (this.authReject && message.params?.error?.includes('authentication')) {
-            this.authReject(new Error(message.params.error));
+          // Check for any auth-related errors
+          const isAuthError = errorMsg.includes('authentication') ||
+                             errorMsg.includes('challenge') ||
+                             errorMsg.includes('signature') ||
+                             errorMsg.includes('auth');
+
+          // If we're waiting for auth and get an error, fail the auth
+          if (this.authReject && isAuthError) {
+            console.error('🚫 Authentication error detected, failing auth flow');
+            this.updateState({
+              status: ConnectionStatus.ERROR,
+              error: errorMsg,
+            });
+            this.authReject(new Error(errorMsg));
             this.authReject = undefined;
             this.authResolve = undefined;
           }
           break;
 
         default:
-          // Check if this might be an auth verify response with different format
-          if (message && this.authResolve) {
-            console.log('✅ Authentication successful!');
-            console.log('🔐 Auth verify response:', JSON.stringify(message, null, 2));
-            await this.handleAuthVerify();
-          } else {
-            // Emit to any registered listeners
+          // Only handle auth_verify explicitly, don't guess authentication success
+          // from other messages. This prevents false positives from messages like
+          // "assets" that arrive during the auth flow.
+
+          // During authentication, log non-auth messages but don't process them as auth success
+          if (this.authResolve && message.method) {
+            console.log(`📝 Received ${message.method} message during authentication flow`);
+          }
+
+          // Always emit to registered listeners for non-auth messages
+          if (message.method) {
             this.emit(message.method, message);
           }
           break;
@@ -469,6 +557,25 @@ export class YellowClient {
     return this.mainAddress;
   }
 
+  /**
+   * Get authentication details for debugging
+   */
+  getAuthDetails(): {
+    isAuthenticated: boolean;
+    status: ConnectionStatus;
+    mainAddress?: string;
+    sessionAddress?: string;
+    hasSessionSigner: boolean;
+  } {
+    return {
+      isAuthenticated: this.isAuthenticated(),
+      status: this.state.status,
+      mainAddress: this.mainAddress,
+      sessionAddress: this.sessionAddress,
+      hasSessionSigner: !!this.sessionSigner,
+    };
+  }
+
   // ============================================================================
   // Balance Management
   // ============================================================================
@@ -497,20 +604,42 @@ export class YellowClient {
   // ============================================================================
   
   /**
+   * Ensure we have a valid authentication before operations
+   */
+  async ensureAuthenticated(): Promise<void> {
+    if (!this.isAuthenticated() || !this.sessionSigner) {
+      console.log('⚠️ Not authenticated or session signer missing, need to authenticate first');
+      throw new Error('Not authenticated. Please authenticate first before creating app sessions.');
+    }
+
+    // Double-check that all required auth components are present
+    if (!this.mainAddress || !this.sessionAddress) {
+      console.error('Authentication incomplete - missing addresses');
+      throw new Error('Authentication incomplete - missing wallet or session addresses');
+    }
+
+    console.log('✅ Authentication verified');
+  }
+
+  /**
    * Use App Sessions to lock funds for betting
    * Create an App Session for a prediction market
    * Returns the app_session_id
    */
   async createAppSession(request: AppSessionRequest): Promise<string> {
     try {
-      if (!this.isAuthenticated() || !this.sessionSigner) {
-        throw new Error('Not authenticated');
-      }
+      // More detailed authentication check
+      console.log('🔍 Authentication check before createAppSession:');
+      console.log('  - Connection status:', this.state.status);
+      console.log('  - isAuthenticated():', this.isAuthenticated());
+      console.log('  - Session signer exists:', !!this.sessionSigner);
+      console.log('  - Main address:', this.mainAddress);
+      console.log('  - Session address:', this.sessionAddress);
+
+      // Ensure we're authenticated
+      await this.ensureAuthenticated();
 
       console.log('🎲 Creating App Session for market...');
-      console.log('Session signer exists:', !!this.sessionSigner);
-      console.log('Main address:', this.mainAddress);
-      console.log('Session address:', this.sessionAddress);
 
       // Create request with application field
       const rpcRequest = {
@@ -521,12 +650,19 @@ export class YellowClient {
         },
       };
 
+      console.log('📝 Creating app session message with session signer...');
       const message = await createAppSessionMessage(this.sessionSigner, rpcRequest as any);
 
       // Parse if it's a string (like in the SDK examples)
       const msgToSend = typeof message === 'string' ? JSON.parse(message) : message;
 
-      console.log('📤 Sending app session message...', msgToSend);
+      // Log the message structure to check signatures
+      console.log('📤 Sending app session message:');
+      console.log('  - Method:', msgToSend.method);
+      console.log('  - Has signatures:', !!msgToSend.signatures);
+      console.log('  - Signatures count:', msgToSend.signatures?.length || 0);
+      console.log('  - Full message:', JSON.stringify(msgToSend, null, 2));
+
       const response = await this.client.sendMessage(msgToSend);
       console.log('📥 App session response:', response);
 
@@ -554,43 +690,328 @@ export class YellowClient {
   }
 
   /**
-   * Submit bet to App Session using DEPOSIT intent
+   * Join an existing market as a new participant with initial funds
+   */
+  async joinMarket(
+    appSessionId: Hex,
+    initialAmount: string,
+    asset: string = 'ytest.usd'
+  ): Promise<void> {
+    try {
+      if (!this.isAuthenticated() || !this.sessionSigner || !this.mainAddress) {
+        throw new Error('Not authenticated');
+      }
+
+      console.log(`🎯 Joining market with ${initialAmount} ${asset}...`);
+
+      // Fetch current state
+      const appState = await this.getAppDefinition(appSessionId);
+
+      console.log('📊 Current app state before joining:', {
+        allocationsCount: appState.allocations.length,
+        allocations: appState.allocations,
+        participants: appState.participants
+      });
+
+      if (appState.status !== 'open') {
+        throw new Error(`Cannot join ${appState.status} market`);
+      }
+
+      // Check if user already has an allocation (is a participant)
+      const existingUserAllocation = appState.allocations.find(
+        alloc => alloc.participant.toLowerCase() === this.mainAddress?.toLowerCase()
+      );
+
+      if (existingUserAllocation) {
+        console.log('✅ User is already a participant with allocation:', existingUserAllocation);
+        // If user already has allocation, we can just return (they don't need to join again)
+        return;
+      }
+
+      // For DEPOSIT intent, we must ensure all existing allocations are preserved
+      // and only add new funds (never decrease existing amounts)
+      let newAllocations;
+
+      if (appState.allocations.length === 0) {
+        console.log('📝 Initializing empty session with user allocation');
+        // Create initial allocations for all participants
+        const participants = appState.participants || [
+          '0x0000000000000000000000000000000000000001',
+          '0x0000000000000000000000000000000000000002',
+          '0x31889e28db474a43572e4f2cf235D657EEa9D88B'
+        ];
+
+        newAllocations = participants.map(p => ({
+          participant: p,
+          amount: '0',
+          asset: asset
+        }));
+
+        // Add user with initial deposit
+        newAllocations.push({
+          participant: this.mainAddress,
+          amount: initialAmount,
+          asset: asset
+        });
+      } else {
+        // IMPORTANT: Preserve all existing allocations exactly as they are
+        // DEPOSIT intent requires that no allocation decreases
+        newAllocations = appState.allocations.map(alloc => ({
+          ...alloc,
+          // Ensure we keep the exact same amount (never decrease)
+          amount: alloc.amount || '0',
+          asset: alloc.asset || asset
+        }));
+
+        // Add user allocation with the deposit amount
+        newAllocations.push({
+          participant: this.mainAddress,
+          amount: initialAmount,
+          asset: asset
+        });
+      }
+
+      // Use DEPOSIT intent to add funds from unified balance
+      const nextVersion = appState.version + 1;
+
+      // Calculate total delta to verify it's positive
+      const oldTotal = appState.allocations.reduce((sum, alloc) =>
+        sum + BigInt(alloc.amount || '0'), BigInt(0));
+      const newTotal = newAllocations.reduce((sum, alloc) =>
+        sum + BigInt(alloc.amount || '0'), BigInt(0));
+      const delta = newTotal - oldTotal;
+
+      console.log('💰 Deposit calculations:', {
+        oldTotal: oldTotal.toString(),
+        newTotal: newTotal.toString(),
+        delta: delta.toString(),
+        isPositiveDelta: delta > BigInt(0)
+      });
+
+      if (delta <= BigInt(0)) {
+        throw new Error(`Invalid deposit: delta must be positive but got ${delta}`);
+      }
+
+      const message = await createSubmitAppStateMessage(this.sessionSigner, {
+        app_session_id: appSessionId,
+        intent: RPCAppStateIntent.Deposit,
+        version: nextVersion,
+        allocations: newAllocations as any,
+      });
+
+      const msgToSend = typeof message === 'string' ? JSON.parse(message) : message;
+
+      console.log('Sending DEPOSIT message to join market:', {
+        version: nextVersion,
+        userAmount: initialAmount,
+        newParticipants: newAllocations.map(a => a.participant),
+        allocations: newAllocations
+      });
+
+      const response = await this.client.sendMessage(msgToSend);
+
+      if ((response as any)?.params?.error) {
+        throw new Error(`Failed to join market: ${(response as any).params.error}`);
+      }
+
+      console.log('✅ Successfully joined market with initial deposit');
+    } catch (error) {
+      console.error('Failed to join market:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Submit bet to App Session using OPERATE intent
    */
   async submitBet(
     appSessionId: Hex,
     poolAddress: Address,
     asset: string,
-    amount: string,
-    currentAllocations: Allocation[]
+    amount: string
   ): Promise<void> {
     try {
       if (!this.isAuthenticated() || !this.sessionSigner) {
+        console.error('Authentication check failed:', {
+          isAuthenticated: this.isAuthenticated(),
+          hasSessionSigner: !!this.sessionSigner,
+          state: this.state
+        });
         throw new Error('Not authenticated');
       }
 
       console.log(`🎯 Submitting bet: ${amount} ${asset} to ${poolAddress}...`);
 
-      // Update allocations with new bet
-      const newAllocations = currentAllocations.map((alloc) =>
-        alloc.participant === poolAddress
-          ? {
-              ...alloc,
-              amount: (BigInt(alloc.amount) + BigInt(amount)).toString(),
-            }
-          : alloc
+      // Fetch current state from server to get accurate version and allocations
+      console.log('Fetching current app state...');
+      const appState = await this.getAppDefinition(appSessionId);
+      let currentAllocations = appState.allocations;
+      let currentVersion = appState.version;
+
+      console.log('Current server state:', {
+        version: currentVersion,
+        allocationsCount: currentAllocations.length,
+        status: appState.status
+      });
+
+      if (appState.status !== 'open') {
+        throw new Error(`Cannot bet on ${appState.status} market`);
+      }
+
+      console.log('User address:', this.mainAddress);
+      console.log('Session signer state:', {
+        hasSessionSigner: !!this.sessionSigner,
+        sessionAddress: this.sessionAddress,
+        authStatus: this.state.status
+      });
+
+      // For OPERATE intent: move funds from user to pool (sum must stay constant)
+      // Check if user has an allocation
+      let userAllocation = currentAllocations.find(
+        alloc => alloc.participant.toLowerCase() === this.mainAddress?.toLowerCase()
       );
+
+      // If user doesn't have an allocation, we need to join the market first
+      if (!userAllocation) {
+        console.log('🔄 User not in market, joining first with initial deposit...');
+
+        // Join the market with a DEPOSIT intent to add user as participant
+        await this.joinMarket(appSessionId, amount, asset);
+
+        // Re-fetch state after joining
+        console.log('Re-fetching app state after joining...');
+        const newAppState = await this.getAppDefinition(appSessionId);
+        currentAllocations = newAppState.allocations;
+        currentVersion = newAppState.version;
+
+        // Now check again for user allocation
+        userAllocation = currentAllocations.find(
+          alloc => alloc.participant.toLowerCase() === this.mainAddress?.toLowerCase()
+        );
+
+        if (!userAllocation) {
+          throw new Error('Failed to add user to market participants');
+        }
+
+        // Now we can place the bet
+        console.log('✅ User successfully joined market, now placing bet...');
+      }
+
+      const userBalance = BigInt(userAllocation.amount || '0');
+      if (userBalance < BigInt(amount)) {
+        throw new Error(`Insufficient balance: ${userBalance} < ${amount}`);
+      }
+
+      // Update allocations: move funds from user to pool
+      // IMPORTANT: Preserve all fields including 'asset'
+      const newAllocations = currentAllocations.map((alloc) => {
+        // Ensure asset field is present
+        const allocWithAsset = {
+          ...alloc,
+          asset: alloc.asset || asset // Use provided asset if allocation doesn't have one
+        };
+
+        if (alloc.participant.toLowerCase() === poolAddress.toLowerCase()) {
+          // Increase pool amount
+          const oldAmount = BigInt(alloc.amount || '0');
+          const newAmount = oldAmount + BigInt(amount);
+          console.log(`Pool ${poolAddress}: ${oldAmount} -> ${newAmount}`);
+          return {
+            ...allocWithAsset,
+            amount: newAmount.toString(),
+          };
+        } else if (alloc.participant.toLowerCase() === this.mainAddress?.toLowerCase()) {
+          // Decrease user amount
+          const newAmount = userBalance - BigInt(amount);
+          console.log(`User ${this.mainAddress}: ${userBalance} -> ${newAmount}`);
+          return {
+            ...allocWithAsset,
+            amount: newAmount.toString(),
+          };
+        }
+        console.log(`Unchanged participant ${alloc.participant}: ${alloc.amount}`);
+        return allocWithAsset;
+      });
+
+      console.log('New allocations after bet:', newAllocations);
+
+      // Log each allocation for debugging
+      newAllocations.forEach((alloc, i) => {
+        console.log(`  Allocation ${i}: ${alloc.participant} = ${alloc.amount} ${alloc.asset || 'ytest.usd'}`);
+      });
+
+      // Verify total remains constant for OPERATE (per asset)
+      const assetToCheck = asset;
+      const oldTotal = currentAllocations
+        .filter(alloc => (alloc.asset || assetToCheck) === assetToCheck)
+        .reduce((sum, alloc) => sum + BigInt(alloc.amount || '0'), 0n);
+
+      const newTotal = newAllocations
+        .filter(alloc => (alloc.asset || assetToCheck) === assetToCheck)
+        .reduce((sum, alloc) => sum + BigInt(alloc.amount || '0'), 0n);
+
+      const delta = newTotal - oldTotal;
+
+      console.log(`Old total for ${assetToCheck}: ${oldTotal}`);
+      console.log(`New total for ${assetToCheck}: ${newTotal}`);
+      console.log(`Delta: ${delta}`);
+
+      if (delta !== 0n) {
+        throw new Error(`Invalid allocation delta for OPERATE: ${delta} (should be 0)`);
+      }
+
+      console.log(`✅ Allocation delta: ${delta} (correct for OPERATE intent)`);
+
+      // Increment version from current state
+      const nextVersion = currentVersion + 1;
+
+      // Try OPERATE intent - it seems to work without special signatures
+      console.log('Creating OPERATE message with:', {
+        appSessionId,
+        intent: 'OPERATE',
+        currentVersion,
+        nextVersion,
+        hasSessionSigner: !!this.sessionSigner,
+        sessionAddress: this.sessionAddress
+      });
+
+      // Ensure session signer is still valid
+      if (!this.sessionSigner) {
+        throw new Error('Session signer lost - need to re-authenticate');
+      }
 
       const message = await createSubmitAppStateMessage(this.sessionSigner, {
         app_session_id: appSessionId,
-        intent: RPCAppStateIntent.Deposit,
-        version: 1,
+        intent: RPCAppStateIntent.Operate,
+        version: nextVersion,
         allocations: newAllocations as any, // Type cast since our Allocation type uses string for participant
       });
 
       // Parse if it's a string
       const msgToSend = typeof message === 'string' ? JSON.parse(message) : message;
-      await this.client.sendMessage(msgToSend);
-      console.log('✅ Bet submitted successfully');
+
+      console.log('Sending OPERATE message:', {
+        hasSignatures: !!(msgToSend.signatures && msgToSend.signatures.length > 0),
+        signatureCount: msgToSend.signatures?.length || 0,
+        method: msgToSend.method,
+        requestId: msgToSend.requestId
+      });
+
+      try {
+        const response = await this.client.sendMessage(msgToSend);
+        console.log('✅ Bet message sent');
+        console.log('OPERATE response:', response);
+
+        // Check if response indicates success
+        if ((response as any)?.params?.error) {
+          throw new Error(`Server error: ${(response as any).params.error}`);
+        }
+
+        console.log('✅ Bet submitted successfully');
+      } catch (sendError) {
+        console.error('Failed to send OPERATE message:', sendError);
+        throw sendError;
+      }
     } catch (error) {
       console.error('Failed to submit bet:', error);
       throw error;
@@ -598,9 +1019,16 @@ export class YellowClient {
   }
 
   /**
-   * Get App Session definition (to read current allocations)
+   * Get App Session definition (to read current allocations and version)
    */
-  async getAppDefinition(appSessionId: Hex): Promise<any> {
+  async getAppDefinition(appSessionId: Hex): Promise<{
+    allocations: Allocation[];
+    version: number;
+    status: string;
+    participants?: string[];
+    weights?: number[];
+    quorum?: number;
+  }> {
     try {
       if (!this.isAuthenticated() || !this.sessionSigner) {
         throw new Error('Not authenticated');
@@ -613,13 +1041,115 @@ export class YellowClient {
 
       // Parse if it's a string
       const msgToSend = typeof message === 'string' ? JSON.parse(message) : message;
-      const response = await this.client.sendMessage(msgToSend);
+      console.log('📤 Sending get_app_definition message:', msgToSend);
 
-      console.log('📄 App definition response:', response);
-      return (response as any).res?.[2] || (response as any).params || response;
+      const response = await this.client.sendMessage(msgToSend);
+      console.log('📄 App definition raw response:', JSON.stringify(response, null, 2));
+
+      // Parse response and extract allocations with version
+      let allocations: Allocation[] = [];
+      let version = 1;
+      let status = 'open';
+      let participants: string[] = [];
+      let weights: number[] = [];
+      let quorum = 100;
+
+      // Try different response formats and extract data
+      const responseData = (response as any).params ||
+                          (response as any).res?.[2] ||
+                          (response as any).result ||
+                          response;
+
+      // Extract allocations from various possible locations
+      if (responseData?.state?.allocations) {
+        allocations = responseData.state.allocations;
+        version = responseData.state.version || 1;
+      } else if (responseData?.allocations) {
+        allocations = responseData.allocations;
+        version = responseData.version || 1;
+      } else if (responseData?.current_state?.allocations) {
+        allocations = responseData.current_state.allocations;
+        version = responseData.current_state.version || 1;
+      } else if (Array.isArray(responseData) && responseData.length > 0) {
+        const firstItem = responseData[0];
+        if (firstItem?.state?.allocations) {
+          allocations = firstItem.state.allocations;
+          version = firstItem.state.version || 1;
+        } else if (firstItem?.allocations) {
+          allocations = firstItem.allocations;
+          version = firstItem.version || 1;
+        }
+      }
+
+      // Extract other metadata
+      if (responseData?.status) {
+        status = responseData.status;
+      }
+      if (responseData?.participants) {
+        participants = responseData.participants;
+      }
+      if (responseData?.weights) {
+        weights = responseData.weights;
+      }
+      if (responseData?.quorum !== undefined) {
+        quorum = responseData.quorum;
+      }
+
+      console.log('📊 Parsed app definition:', {
+        allocationsCount: allocations.length,
+        version,
+        status,
+        participantsCount: participants.length
+      });
+
+      return {
+        allocations,
+        version,
+        status,
+        participants,
+        weights,
+        quorum
+      };
     } catch (error) {
       console.error('Failed to get app definition:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Get current app state including version
+   */
+  async getAppState(appSessionId: Hex): Promise<{ version: number; allocations: Allocation[] }> {
+    try {
+      if (!this.isAuthenticated() || !this.sessionSigner) {
+        throw new Error('Not authenticated');
+      }
+
+      // Use the SDK method to get app definition which includes state
+      const message = await createGetAppDefinitionMessage(
+        this.sessionSigner,
+        appSessionId
+      );
+
+      // Send the message as-is from the SDK (don't convert the format)
+      const msgToSend = typeof message === 'string' ? JSON.parse(message) : message;
+
+      const response = await this.client.sendMessage(msgToSend);
+      console.log('📊 Current app state response:', response);
+
+      // Extract version and allocations from response
+      const result = (response as any).result || (response as any).params || {};
+      const allocations = result.allocations || result.state?.allocations || [];
+      const version = result.version || result.state?.version || 1;
+
+      return {
+        version,
+        allocations
+      };
+    } catch (error) {
+      console.error('Failed to get app state:', error);
+      // Return default values if state fetch fails
+      return { version: 1, allocations: [] };
     }
   }
 
@@ -670,17 +1200,108 @@ export class YellowClient {
   ): Promise<void> {
     try {
       if (!this.isAuthenticated() || !this.sessionSigner) {
-        throw new Error('Not authenticated');
+        throw new Error('Not authenticated or session signer missing. Please authenticate first.');
       }
 
       console.log('🏁 Closing App Session:', appSessionId);
+      console.log('Session signer available:', !!this.sessionSigner);
+      console.log('Final allocations:', finalAllocations);
+
+      // Calculate total amount in allocations
+      const totalAmount = finalAllocations.reduce((sum, alloc) => {
+        return sum + BigInt(alloc.amount);
+      }, BigInt(0));
+
+      console.log('Total amount to redistribute:', totalAmount.toString());
+
+      // Try to get current app state but don't fail if it doesn't work
+      let adjustedAllocations = [...finalAllocations];
+      let isEmptySession = false;
+
+      try {
+        const currentState = await this.getAppState(appSessionId);
+        console.log('Current app state:', currentState);
+
+        // Check if session has any allocations at all
+        if (!currentState.allocations || currentState.allocations.length === 0) {
+          console.log('📭 Session is empty (no allocations)');
+          isEmptySession = true;
+          // For empty sessions, we still need to provide an allocation with 0 amount
+          // Keep the original allocation structure but ensure amount is "0"
+          if (adjustedAllocations.length > 0) {
+            adjustedAllocations[0].amount = "0";
+          }
+        } else {
+          const currentTotal = currentState.allocations.reduce((sum, alloc) => {
+            return sum + BigInt(alloc.amount);
+          }, BigInt(0));
+
+          console.log('Current total in app state:', currentTotal.toString());
+
+          // If trying to close with 0 but there's funds in the session, redistribute properly
+          if (totalAmount === BigInt(0) && currentTotal > BigInt(0)) {
+            console.log('⚠️ Adjusting allocations to redistribute all funds');
+            adjustedAllocations[0].amount = currentTotal.toString();
+          }
+        }
+      } catch (stateError) {
+        console.log('⚠️ Could not fetch current state, proceeding with provided allocations');
+        // Keep the allocations as provided - they already have amount "0" for empty sessions
+      }
 
       const message = await createCloseAppSessionMessage(this.sessionSigner, {
         app_session_id: appSessionId,
-        allocations: finalAllocations as any, // Type cast since our Allocation type uses string for participant
+        allocations: adjustedAllocations as any,
       });
 
-      await this.client.sendMessage(message);
+      console.log('Raw message from createCloseAppSessionMessage:', message);
+      console.log('Message type:', typeof message);
+
+      // The nitrolite SDK returns messages in a special format that should be sent as-is
+      // Just parse if it's a string, but don't convert the format
+      const msgToSend = typeof message === 'string' ? JSON.parse(message) : message;
+
+      // Log what we're actually sending
+      console.log('Sending close message (raw format):', JSON.stringify(msgToSend, null, 2));
+
+      const response = await this.client.sendMessage(msgToSend);
+      console.log('Close session response:', response);
+
+      // Check for errors in response
+      if ((response as any)?.params?.error) {
+        const errorMsg = (response as any).params.error;
+
+        // Provide helpful context for specific errors
+        if (errorMsg === 'authentication required') {
+          console.error('Authentication lost - session key may have expired');
+          throw new Error('Authentication required. Please re-authenticate to close the session.');
+        }
+
+        if (errorMsg.includes('not fully redistributed')) {
+          console.error('Asset redistribution error:', {
+            providedAllocations: adjustedAllocations,
+            totalAmount: totalAmount.toString(),
+            isEmptySession
+          });
+
+          if (isEmptySession) {
+            throw new Error('Cannot close empty session. Please make a deposit/bet first before closing.');
+          }
+
+          throw new Error(`Asset redistribution error: ${errorMsg}. Check that all funds are properly allocated.`);
+        }
+
+        if (errorMsg.includes('missing required parameters')) {
+          console.error('Missing parameters error:', {
+            providedAllocations: adjustedAllocations,
+            errorMsg
+          });
+          throw new Error(`Invalid close request: ${errorMsg}. The session may need deposits before it can be closed.`);
+        }
+
+        throw new Error(`Failed to close session: ${errorMsg}`);
+      }
+
       console.log('✅ App Session closed successfully');
     } catch (error) {
       console.error('Failed to close app session:', error);

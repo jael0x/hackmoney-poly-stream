@@ -8,6 +8,7 @@ import { useAccount } from 'wagmi';
 import { getWalletClient } from '@wagmi/core';
 import type { Hex, Address } from 'viem';
 import { formatAddress } from '@/lib/utils';
+import { InlineMarketOperations } from '@/components/inline-market-operations';
 
 declare global {
   interface Window {
@@ -71,19 +72,58 @@ export default function TestYellow() {
 
       // Step 4: Authenticate with wallet
       addLog('Step 4: Authenticating with wallet...');
-      await yellowClient.authenticate(address as Hex, walletClient as any);
-      addLog('✅ Authenticated!');
+      try {
+        await yellowClient.authenticate(address as Hex, walletClient as any);
 
-      // Step 5: Get session info
-      const sessionKeys = await yellowClient.getSessionKeys();
-      addLog(`Step 5: Session keys: ${sessionKeys.length > 0 ? sessionKeys[0].session_key.slice(0, 10) + '...' : 'N/A'}`);
+        // Verify authentication was successful
+        const connectionState = yellowClient.getState();
+        if (connectionState.status !== 'authenticated') {
+          throw new Error(`Authentication incomplete - status is ${connectionState.status}, expected 'authenticated'`);
+        }
 
-      // Step 6: Check balances
+        addLog('✅ Authenticated successfully!');
+        addLog(`   Session status: ${connectionState.status}`);
+
+      } catch (authError: any) {
+        addLog(`❌ Authentication failed: ${authError.message}`);
+
+        // Clean up on auth failure
+        yellowClient.disconnect();
+        yellowClientRef.current = null;
+
+        setStatus('Authentication Failed');
+        return; // Stop here, don't continue with other steps
+      }
+
+      // Step 5: Get session info (with error handling)
+      try {
+        const sessionKeys = await yellowClient.getSessionKeys();
+        addLog(`Step 5: Session keys: ${sessionKeys.length > 0 ? sessionKeys[0].session_key.slice(0, 10) + '...' : 'N/A'}`);
+      } catch (error: any) {
+        addLog(`⚠️ Step 5: Could not get session keys: ${error.message}`);
+        // Continue anyway, this is not critical
+      }
+
+      // Step 6: Fetch balance (with error handling)
       addLog('Step 6: Fetching balance...');
+      let ledgerBalances: any[] = [];
+      try {
+        const unifiedBalance = await yellowClient.fetchUnifiedBalance();
+        ledgerBalances = unifiedBalance.balances || [];
+      } catch (error: any) {
+        addLog(`⚠️ Step 6: Could not fetch balance: ${error.message}`);
+        // Continue anyway, balance will be 0
+      }
 
-      // Get ledger balance (your actual Yellow Network balance)
-      const ledgerBalances = yellowClient.getLedgerBalance();
-      console.log('Ledger balances:', ledgerBalances);
+      // Log all balances for debugging
+      if (ledgerBalances.length > 0) {
+        addLog(`Found ${ledgerBalances.length} balance entries:`);
+        ledgerBalances.forEach((b: any) => {
+          addLog(`  - ${b.asset}: ${b.amount} units`);
+        });
+      } else {
+        addLog('⚠️ No balances found. You may need ytest.usd tokens from a faucet.');
+      }
 
       // Extract ytest.usd balance
       let balance = '0';
@@ -95,7 +135,22 @@ export default function TestYellow() {
       }
 
       setLedgerBalance(balance);
-      addLog(`Ledger balance: ${balance} ytest.usd`);
+      addLog(`✅ Ledger balance: ${balance} ytest.usd (${Number(balance) / 1000000} tokens)`);
+
+      // Step 7: Refresh app sessions (with error handling)
+      addLog('Step 7: Refreshing app sessions...');
+      try {
+        const sessions = await yellowClient.getAppSessions(address, 'open');
+        addLog(`✅ Found ${sessions.length} active app sessions`);
+
+        if (sessions.length > 0) {
+          console.log('Active sessions:', sessions);
+          setAppSessions(sessions); // Update the state with the fetched sessions
+        }
+      } catch (error: any) {
+        addLog(`⚠️ Step 7: Could not fetch app sessions: ${error.message}`);
+        // Continue anyway, sessions list will be empty
+      }
 
       setStatus('SUCCESS! 🎉');
     } catch (error: unknown) {
@@ -116,7 +171,31 @@ export default function TestYellow() {
     }
 
     try {
+      // Check authentication status first
+      const authDetails = yellowClientRef.current.getAuthDetails();
+      addLog('🔍 Pre-market creation auth check:');
+      addLog(`  - Authenticated: ${authDetails.isAuthenticated}`);
+      addLog(`  - Status: ${authDetails.status}`);
+      addLog(`  - Has session signer: ${authDetails.hasSessionSigner}`);
+
+      if (!authDetails.isAuthenticated) {
+        addLog('❌ Not authenticated! Please authenticate first.');
+        return;
+      }
+
       addLog('Creating test prediction market...');
+
+      // Check user's current balance
+      const hasBalance = await yellowClientRef.current.hasBalance('ytest.usd', '1000000'); // Check for at least 1 ytest.usd
+      let initialAmount = '0';
+
+      if (hasBalance) {
+        // Use a smaller amount - 1 ytest.usd (1000000 units)
+        initialAmount = '1000000';
+        addLog(`Using ${initialAmount} units (1 ytest.usd) for initial market allocation`);
+      } else {
+        addLog('Warning: No ytest.usd balance available, creating market with 0 initial allocation');
+      }
 
       // Create a simple test market
       const appSessionId = await yellowClientRef.current.createAppSession({
@@ -138,6 +217,11 @@ export default function TestYellow() {
             participant: '0x0000000000000000000000000000000000000002' as Address, // NO pool
             amount: '0',
             asset: 'ytest.usd'
+          },
+          {
+            participant: address as Address, // User with initial balance
+            amount: initialAmount, // Use available balance or 0
+            asset: 'ytest.usd'
           }
         ]
       });
@@ -149,55 +233,6 @@ export default function TestYellow() {
       await fetchAppSessions();
     } catch (error) {
       addLog(`❌ Error creating market: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-
-  const placeBet = async (position: 'yes' | 'no') => {
-    if (!yellowClientRef.current || !testMarketId) {
-      addLog('ERROR: Client not initialized or no market created');
-      return;
-    }
-
-    try {
-      const amount = '1000000'; // 1 ytest.usd (6 decimals)
-      const poolAddress = position === 'yes'
-        ? '0x0000000000000000000000000000000000000001'
-        : '0x0000000000000000000000000000000000000002';
-
-      addLog(`Placing ${position.toUpperCase()} bet of 1 ytest.usd...`);
-
-      // Get current allocations
-      const sessions = await yellowClientRef.current.getAppSessions(address as Address);
-      const session = sessions.find((s: any) =>
-        s.app_session_id === testMarketId || s.appSessionId === testMarketId
-      );
-      const currentAllocations = session?.allocations || [];
-
-      // Submit bet
-      await yellowClientRef.current.submitBet(
-        testMarketId as Hex,
-        poolAddress as Address,
-        'ytest.usd',
-        amount,
-        currentAllocations
-      );
-
-      addLog(`✅ Bet placed on ${position.toUpperCase()}!`);
-
-      // Refresh balance and sessions
-      const ledgerBalances = yellowClientRef.current.getLedgerBalance();
-      let balance = '0';
-      if (ledgerBalances && ledgerBalances.length > 0) {
-        const ytestBalance = ledgerBalances.find((b: any) => b.asset === 'ytest.usd');
-        if (ytestBalance) {
-          balance = ytestBalance.amount || '0';
-        }
-      }
-      setLedgerBalance(balance);
-
-      await fetchAppSessions();
-    } catch (error) {
-      addLog(`❌ Error placing bet: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -242,60 +277,6 @@ export default function TestYellow() {
     }
   };
 
-  const closeTestMarket = async () => {
-    if (!yellowClientRef.current || !testMarketId) {
-      addLog('ERROR: Client not initialized or no market to close');
-      return;
-    }
-
-    try {
-      addLog('Closing test market...');
-
-      // Get current session state
-      const sessions = await yellowClientRef.current.getAppSessions(address as Address);
-      const session = sessions.find((s: any) =>
-        s.app_session_id === testMarketId || s.appSessionId === testMarketId
-      );
-
-      if (!session) {
-        throw new Error('Session not found');
-      }
-
-      // For testing, distribute all funds back to the user
-      const totalAmount = session.allocations?.reduce((sum: bigint, alloc: any) =>
-        sum + BigInt(alloc.amount || 0), 0n) || 0n;
-
-      const finalAllocations = [{
-        participant: address as Address,
-        amount: totalAmount.toString(),
-        asset: 'ytest.usd'
-      }];
-
-      await yellowClientRef.current.closeAppSession(
-        testMarketId as Hex,
-        finalAllocations
-      );
-
-      addLog(`✅ Market closed! Funds returned to wallet.`);
-      setTestMarketId('');
-
-      // Refresh balance and sessions
-      const ledgerBalances = yellowClientRef.current.getLedgerBalance();
-      let balance = '0';
-      if (ledgerBalances && ledgerBalances.length > 0) {
-        const ytestBalance = ledgerBalances.find((b: any) => b.asset === 'ytest.usd');
-        if (ytestBalance) {
-          balance = ytestBalance.amount || '0';
-        }
-      }
-      setLedgerBalance(balance);
-
-      await fetchAppSessions();
-    } catch (error) {
-      addLog(`❌ Error closing market: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-
   return (
     <div className="bg-gray-900 text-white">
       <Navbar />
@@ -309,7 +290,14 @@ export default function TestYellow() {
             <div className="mb-6 space-y-2">
               <p>Wallet: {mounted && isConnected ? formatAddress(address) : 'Not connected'}</p>
               <p>Status: <span className={status === 'SUCCESS! 🎉' ? 'text-green-500' : status === 'FAILED' ? 'text-red-500' : 'text-yellow-500'}>{status}</span></p>
-              <p>Balance: {ledgerBalance} ytest.usd</p>
+              <p>Balance: {ledgerBalance} ytest.usd ({Number(ledgerBalance) / 1000000} tokens)</p>
+              {ledgerBalance === '0' && status === 'SUCCESS! 🎉' && (
+                <div className="bg-yellow-900/50 border border-yellow-600 rounded p-3 text-sm">
+                  <p className="font-semibold">⚠️ No ytest.usd balance detected</p>
+                  <p className="mt-1">To create markets and place bets, you need ytest.usd tokens from the Yellow Network testnet faucet.</p>
+                  <p className="mt-1">Markets can still be created with 0 initial allocation for testing.</p>
+                </div>
+              )}
             </div>
 
             <div className="space-x-4 mb-3 flex flex-row">
@@ -363,39 +351,6 @@ export default function TestYellow() {
         </div>
 
         <div className="container">
-          <div className="mb-8 bg-gray-800 rounded-lg p-6">
-            <h2 className="text-2xl font-semibold mb-4">Market Operations</h2>
-
-            <div className="space-y-4">
-
-              <div className="flex space-x-4">
-                <button
-                  onClick={() => placeBet('yes')}
-                  disabled={!mounted || !yellowClientRef.current || !testMarketId}
-                  className="px-4 py-2 bg-green-500 hover:bg-green-600 disabled:bg-gray-600 rounded"
-                >
-                  Bet YES (1 ytest.usd)
-                </button>
-                <button
-                  onClick={() => placeBet('no')}
-                  disabled={!mounted || !yellowClientRef.current || !testMarketId}
-                  className="px-4 py-2 bg-red-500 hover:bg-red-600 disabled:bg-gray-600 rounded"
-                >
-                  Bet NO (1 ytest.usd)
-                </button>
-              </div>
-
-              <div>
-                <button
-                  onClick={closeTestMarket}
-                  disabled={!mounted || !yellowClientRef.current || !testMarketId}
-                  className="px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 rounded"
-                >
-                  Close Market & Return Funds
-                </button>
-              </div>
-            </div>
-          </div>
           <div className="mb-8 bg-gray-800 rounded-lg p-6">
             <h2 className="text-2xl font-semibold mb-4">Active App Sessions (Markets)</h2>
 
@@ -497,7 +452,7 @@ export default function TestYellow() {
                                 <div key={pIdx} className="flex justify-between items-center text-xs bg-gray-800 p-2 rounded">
                                   <span className={`${color} font-semibold`}>{label}</span>
                                   <span className="font-mono text-gray-300">
-                                    {isYesPool || isNoPool ? participant.slice(0, 10) : formatAddress(participant)}
+                                    {isYesPool || isNoPool ? formatAddress(participant) : formatAddress(participant)}
                                   </span>
                                   <span className="text-yellow-400">Weight: {session.weights?.[pIdx] || 0}</span>
                                 </div>
@@ -525,12 +480,6 @@ export default function TestYellow() {
                           </div>
                         )}
 
-                        {/* Total Value Locked */}
-                        <div className="bg-yellow-900/20 p-3 rounded border border-yellow-600">
-                          <p className="text-xs text-yellow-400">Total Value Locked</p>
-                          <p className="text-xl font-bold text-yellow-300">{totalLocked.toString()} ytest.usd</p>
-                        </div>
-
                         {/* Timestamps */}
                         <div className="pt-2 border-t border-gray-600">
                           <div className="grid grid-cols-2 gap-2 text-xs">
@@ -557,6 +506,15 @@ export default function TestYellow() {
                             ))}
                           </div>
                         )}
+
+                        {/* Market Operations Component - Only for open sessions */}
+                        <InlineMarketOperations 
+                          sessionId={sessionId}
+                          session={session}
+                          yellowClient={yellowClientRef.current}
+                          userAddress={address as Address}
+                          onUpdate={fetchAppSessions}
+                        />
                       </div>
                     </div>
                   );
