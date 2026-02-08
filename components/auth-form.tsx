@@ -74,7 +74,7 @@ export function AuthForm({ mode }: AuthFormProps) {
           <Link href="/" className="inline-flex items-center gap-2 mb-4">
             <Gamepad2 className="h-10 w-10 text-purple-500" />
             <span className="text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-500 bg-clip-text text-transparent">
-              StreamBet
+              PolyStream
             </span>
           </Link>
           <h2 className="text-2xl font-bold text-white mt-4">

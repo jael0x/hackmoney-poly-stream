@@ -1,10 +1,18 @@
 import { notFound } from 'next/navigation';
-import { createServerClient } from '@/lib/supabase/server';
+import { createServerClient, createServiceClient } from '@/lib/supabase/server';
 import { Navbar } from '@/components/navbar';
 import { MarketCard } from '@/components/market-card';
 import { Badge } from '@/components/ui/badge';
+import { TwitchEmbed } from '@/components/twitch-embed';
+import { StreamStats } from '@/components/stream-stats';
 import { Users, Tv } from 'lucide-react';
 import type { Database } from '@/types/database';
+import type { TwitchStream, TwitchUser } from '@/types/twitch';
+import {
+  getFollowerCount,
+  getStreamByUser,
+  getUserByLogin,
+} from '@/lib/twitch/client';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -27,6 +35,89 @@ async function getStreamer(slug: string): Promise<Streamer | null> {
   return streamer;
 }
 
+async function ensureStreamerAndMarket(slug: string): Promise<Streamer | null> {
+  let twitchUser = null;
+  try {
+    twitchUser = await getUserByLogin(slug);
+  } catch (error) {
+    console.error('Error fetching Twitch user:', error);
+  }
+
+  const [stream, followerCount] = twitchUser
+    ? await Promise.all([
+        getStreamByUser(slug),
+        getFollowerCount(twitchUser.id),
+      ])
+    : [null, 0];
+
+  const supabase = createServiceClient();
+
+  // Ensure we always have a name (required field)
+  const displayName = twitchUser?.display_name || slug;
+
+  // If we couldn't get Twitch user data, return null to avoid DB error
+  if (!twitchUser) {
+    console.error(`Twitch user not found for slug: ${slug}`);
+    return null;
+  }
+
+  const upsertPayload = {
+    name: displayName,
+    slug,
+    description: twitchUser.description || null,
+    profile_image_url: twitchUser.profile_image_url || null,
+    banner_image_url: twitchUser.offline_image_url || null,
+    platform: 'twitch' as const,
+    is_live: Boolean(stream),
+    followers_count: followerCount,
+  };
+
+  const { data: upsertedStreamer, error: upsertError } = await supabase
+    .from('streamers')
+    .upsert(upsertPayload, { onConflict: 'slug' })
+    .select('*')
+    .single();
+
+  if (upsertError || !upsertedStreamer) {
+    console.error('Error upserting streamer:', upsertError);
+    return null;
+  }
+
+  const { data: activeMarkets, error: activeMarketsError } = await supabase
+    .from('markets')
+    .select('id')
+    .eq('streamer_id', upsertedStreamer.id)
+    .eq('status', 'active')
+    .limit(1);
+
+  if (activeMarketsError) {
+    console.error('Error checking active markets:', activeMarketsError);
+  }
+
+  if (!activeMarkets || activeMarkets.length === 0) {
+    const endDate = new Date(
+      Date.now() + 7 * 24 * 60 * 60 * 1000
+    ).toISOString();
+
+    const { error: insertError } = await supabase.from('markets').insert({
+      streamer_id: upsertedStreamer.id,
+      question: `Will ${upsertedStreamer.name} reach 10k viewers today?`,
+      description: `Auto-created market for ${upsertedStreamer.name}'s stream.`,
+      yes_price: 50,
+      no_price: 50,
+      volume: 0,
+      end_date: endDate,
+      status: 'active',
+    });
+
+    if (insertError) {
+      console.error('Error creating market:', insertError);
+    }
+  }
+
+  return upsertedStreamer;
+}
+
 async function getMarkets(streamerId: string): Promise<Market[]> {
   const supabase = createServerClient();
   const { data: markets, error } = await supabase
@@ -47,12 +138,42 @@ async function getMarkets(streamerId: string): Promise<Market[]> {
 export default async function StreamerPage({
   params,
 }: {
-  params: { slug: string };
+  params: Promise<{ slug: string }>;
 }) {
-  const streamer = await getStreamer(params.slug);
+  // Await params in Next.js 16+
+  const { slug } = await params;
+
+  let streamer = await getStreamer(slug);
+
+  if (!streamer) {
+    streamer = await ensureStreamerAndMarket(slug);
+  }
 
   if (!streamer) {
     notFound();
+  }
+
+  // ALWAYS get fresh data from Twitch API for accurate stats
+  let streamData: TwitchStream | null = null;
+  let userData: TwitchUser | null = null;
+  let followerCount = streamer.followers_count; // Default to DB value
+
+  try {
+    [streamData, userData] = await Promise.all([
+      getStreamByUser(slug),
+      getUserByLogin(slug),
+    ]);
+
+    console.log('[StreamerPage] userData:', userData);
+    console.log('[StreamerPage] streamData:', streamData);
+
+    // Get fresh follower count
+    if (userData) {
+      followerCount = await getFollowerCount(userData.id);
+      console.log('[StreamerPage] followerCount:', followerCount);
+    }
+  } catch (error) {
+    console.error('Error fetching Twitch data:', error);
   }
 
   const markets = await getMarkets(streamer.id);
@@ -122,6 +243,38 @@ export default async function StreamerPage({
             </div>
           </div>
         </div>
+
+        {/* Stream Statistics */}
+        <StreamStats
+          viewerCount={streamData?.viewer_count}
+          followersCount={followerCount}
+          broadcasterType={userData?.broadcaster_type}
+          gameName={streamData?.game_name}
+          startedAt={streamData?.started_at}
+          isLive={streamer.is_live}
+        />
+
+        {/* Twitch Stream Embed - Show only when streamer is live */}
+        {streamer.is_live && (
+          <div className="mb-8">
+            <div className="mb-4 flex items-center gap-3">
+              <h2 className="text-2xl font-bold text-white">Live Stream</h2>
+              <Badge className="bg-red-600 text-white border-0 animate-pulse">
+                <span className="relative flex h-2 w-2 mr-1.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
+                </span>
+                LIVE
+              </Badge>
+            </div>
+            <TwitchEmbed
+              channel={slug}
+              height={500}
+              autoplay={true}
+              muted={false}
+            />
+          </div>
+        )}
 
         <div className="mb-6">
           <h2 className="text-2xl font-bold text-white mb-4">Active Markets</h2>
